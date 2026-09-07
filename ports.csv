@@ -1,0 +1,5 @@
+port_id,port_name,country,latitude,longitude,max_draft_m,num_berths,max_dwt_capable,notes
+1,Visakhapatnam,India,17.6868,83.2185,14.0,30,95000,Deepest natural harbour on east coast; West Quay-1 max draft 14.0m
+2,Paradip,India,20.2654,86.6763,16.0,21,118000,"Handles Capesize up to 118,000 DWT at 14.5m draft"
+3,Krishnapatnam,India,14.25,80.1167,18.5,26,180000,India's deepest port; handles largest bulk carriers
+4,Kakinada,India,16.975,82.279,12.0,4,50000,"Deep water channel 12m; Panamax/Supramax only, not Capesize"
