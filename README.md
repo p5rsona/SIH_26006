@@ -1,4 +1,4 @@
-# Freight Rate Forecasting (Person 2)
+# Freight Rate Forecasting
 
 ## Setup
 ```bash
