@@ -42,11 +42,7 @@ suggest on its own. Fold `disagreement_pct` into the Monte Carlo scenario
 variance as an extra source of spread, on top of the residual-based
 variance you're already sampling from SARIMAX's CI.
 
-## Once Person 1's DB is live
-Nothing to change in your code — `data_loader.py` tries MySQL first automatically. Just set env vars (or edit `config.py`):
-```bash
-export FR_DB_HOST=... FR_DB_USER=... FR_DB_PASSWORD=... FR_DB_NAME=...
-```
+
 
 ## Note on this sandbox
 `statsmodels` and `xgboost` aren't installed in the environment this was built in (no network access to pip install), so `models.py`/`backtest.py`/`forecast.py` are reviewed carefully but not execution-tested here — `data_loader.py` and `features.py` (pandas/numpy only) were run and confirmed working. Run `pip install -r requirements.txt` then `python example_usage.py` on your machine to verify the SARIMAX/XGBoost paths before you present it to the team.
