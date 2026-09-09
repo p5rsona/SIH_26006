@@ -1,48 +1,86 @@
-# Freight Rate Forecasting
+# Person 4 – Optimization Engine
 
-## Setup
-```bash
-pip install -r requirements.txt
-```
+## Objective
 
-## Files
-- `config.py` — routes, DB connection settings
-- `data_loader.py` — loads history from Person 1's MySQL DB; **falls back to a synthetic series automatically if the DB isn't reachable/seeded yet**, so you're not blocked
-- `features.py` — lag/rolling-volatility/seasonality/monsoon/bunker-price features (shared design so Person 3 can reuse for commodity prices — just pass a different `target_col`)
-- `models.py` — `SarimaxModel` and `XgbForecaster`, common `fit()`/`predict()` interface
-- `backtest.py` — walk-forward MAPE/RMSE backtest, `compare_models()` gives a summary table for slides
-- `forecast.py` — **the output contract**: `forecast_freight_rate(route, horizon_weeks) -> DataFrame[date, rate, ci_lower, ci_upper]`
-- `example_usage.py` — run this to see the whole pipeline end to end
+The Optimization Engine determines a feasible and cost-efficient
+chartering plan by assigning cargo lots to vessels and ports while
+respecting operational constraints.
 
-## Quick start
-```bash
-python example_usage.py
-```
+## Technology
 
-## For Person 4 / Person 5
-```python
-from forecast import forecast_freight_rate
+- Python
+- Google OR-Tools CP-SAT
+- Pandas
 
-df = forecast_freight_rate("C5", horizon_weeks=8)
-# columns: date, rate, ci_lower, ci_upper
-```
+## Inputs
 
-### For Person 5 specifically — model disagreement as a risk signal
-```python
-from forecast import forecast_with_disagreement
+The optimizer accepts:
 
-df = forecast_with_disagreement("C5", horizon_weeks=8)
-# columns: date, rate, ci_lower, ci_upper, xgb_rate, disagreement, disagreement_pct
-```
-SARIMAX and XGBoost make very different structural assumptions, so when
-their point forecasts diverge, that gap is itself a useful signal — it
-means there's more genuine uncertainty in the market than SARIMAX's own
-CI (which only reflects uncertainty *within* its own assumptions) would
-suggest on its own. Fold `disagreement_pct` into the Monte Carlo scenario
-variance as an extra source of spread, on top of the residual-based
-variance you're already sampling from SARIMAX's CI.
+- Cargo information
+- Vessel information
+- Port information
+- Procurement prices
+- Freight costs
+- Vessel costs
+- Port costs
+- Laycan windows
+- Vessel availability
+- Vessel DWT
+- Vessel draft
+- Overall budget
 
+## Optimization Constraints
 
+The model considers:
 
-## Note on this sandbox
-`statsmodels` and `xgboost` aren't installed in the environment this was built in (no network access to pip install), so `models.py`/`backtest.py`/`forecast.py` are reviewed carefully but not execution-tested here — `data_loader.py` and `features.py` (pandas/numpy only) were run and confirmed working. Run `pip install -r requirements.txt` then `python example_usage.py` on your machine to verify the SARIMAX/XGBoost paths before you present it to the team.
+1. Cargo must be assigned to a feasible vessel and port.
+2. Vessel DWT cannot be exceeded.
+3. Vessel draft cannot exceed the port's maximum draft.
+4. Cargo laycan must overlap with vessel availability.
+5. Optional allowed-port restrictions are supported.
+6. Total cost must remain within the specified budget.
+
+## Objective Function
+
+The optimizer minimizes total landed cost:
+
+Procurement Cost
++ Freight Cost
++ Vessel Fixed Cost
++ Port Cost
+
+## Output
+
+The optimizer returns a Pandas DataFrame containing:
+
+- cargo
+- vessel
+- port
+- qty
+- cost_breakdown
+
+## Test Data
+
+The initial implementation uses static vessel, cargo and port data so
+that the optimization engine can be developed independently of the
+database and forecasting modules.
+
+Forecast commodity prices are read from the supplied forecast CSV files.
+
+## Running the Program
+
+Install dependencies:
+
+    python -m pip install -r requirements.txt
+
+Run:
+
+    python optimizer.py
+
+The program prints the optimal chartering plan.
+
+## Integration
+
+The optimizer is designed so that the static test data can later be
+replaced with data supplied by the team's database/data-engineering
+module and forecast outputs from the forecasting modules.
