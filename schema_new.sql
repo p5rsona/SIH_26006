@@ -1,0 +1,113 @@
+-- ============================================================
+-- SIH Maritime Procurement & Chartering Optimizer — DB Schema
+-- MySQL 8.0+
+-- ============================================================
+
+CREATE DATABASE IF NOT EXISTS sih_shipping;
+USE sih_shipping;
+
+-- ------------------------------------------------------------
+-- PORTS: East-coast India destination ports in scope (Expanded)
+-- ------------------------------------------------------------
+CREATE TABLE ports (
+    port_id             INT AUTO_INCREMENT PRIMARY KEY,
+    port_name           VARCHAR(100) NOT NULL,
+    country             VARCHAR(50)  NOT NULL DEFAULT 'India',
+    latitude            DECIMAL(9,6),
+    longitude           DECIMAL(9,6),
+    max_draft_m         DECIMAL(5,2) NOT NULL,      -- max allowable draft in metres
+    loa_m               DECIMAL(6,2),               -- Length Overall restriction
+    beam_m              DECIMAL(5,2),               -- Beam restriction
+    num_berths          INT,
+    max_dwt_capable     INT,                        -- largest vessel DWT the port can realistically berth
+    handling_rate_tpd   INT,                        -- daily discharge rate (tonnes per day) to calculate port stay
+    notes               VARCHAR(255)
+);
+
+-- ------------------------------------------------------------
+-- ORIGIN PORTS: where cargo is loaded (Expanded)
+-- ------------------------------------------------------------
+CREATE TABLE origin_ports (
+    origin_id       INT AUTO_INCREMENT PRIMARY KEY,
+    origin_name     VARCHAR(100) NOT NULL,
+    country         VARCHAR(50)  NOT NULL,
+    commodity_focus VARCHAR(50)  NOT NULL        -- e.g. 'coal', 'grain'
+);
+
+-- ------------------------------------------------------------
+-- ROUTES: origin -> destination port pairs with distance
+-- ------------------------------------------------------------
+CREATE TABLE routes (
+    route_id             INT AUTO_INCREMENT PRIMARY KEY,
+    origin_id            INT NOT NULL,
+    port_id              INT NOT NULL,
+    distance_nm          INT NOT NULL,                -- nautical miles
+    typical_transit_days DECIMAL(5,2),
+    FOREIGN KEY (origin_id) REFERENCES origin_ports(origin_id),
+    FOREIGN KEY (port_id)   REFERENCES ports(port_id)
+);
+
+-- ------------------------------------------------------------
+-- VESSELS: Fleet including Capesize, Panamax, Supramax, Handysize
+-- ------------------------------------------------------------
+CREATE TABLE vessels (
+    vessel_id             INT AUTO_INCREMENT PRIMARY KEY,
+    vessel_name           VARCHAR(50) NOT NULL,
+    vessel_class          VARCHAR(30) NOT NULL,   
+    dwt                   INT NOT NULL,
+    speed_knots           DECIMAL(4,1) NOT NULL,
+    consumption_tpd_laden DECIMAL(5,1) NOT NULL,  -- tons fuel/day laden
+    consumption_tpd_ballast DECIMAL(5,1) NOT NULL,
+    open_port_id          INT,                     -- where the vessel becomes available
+    open_date             DATE NOT NULL,
+    FOREIGN KEY (open_port_id) REFERENCES ports(port_id)
+);
+
+-- ------------------------------------------------------------
+-- FREIGHT RATES HISTORY: daily BDI / BCI / BPI / BSI index values
+-- ------------------------------------------------------------
+CREATE TABLE freight_rates_history (
+    rate_id     INT AUTO_INCREMENT PRIMARY KEY,
+    rate_date   DATE NOT NULL,
+    index_name  VARCHAR(10) NOT NULL,   -- BDI, BCI, BPI, BSI
+    index_value DECIMAL(10,2) NOT NULL,
+    UNIQUE KEY uq_date_index (rate_date, index_name)
+);
+
+-- ------------------------------------------------------------
+-- COMMODITY PRICES: FOB prices at origin
+-- ------------------------------------------------------------
+CREATE TABLE commodity_prices (
+    price_id     INT AUTO_INCREMENT PRIMARY KEY,
+    price_date   DATE NOT NULL,
+    commodity    VARCHAR(30) NOT NULL,   -- 'coal_newcastle', 'wheat_gulf', 'corn_gulf'
+    origin_id    INT,
+    price_usd_per_tonne DECIMAL(8,2) NOT NULL,
+    FOREIGN KEY (origin_id) REFERENCES origin_ports(origin_id),
+    UNIQUE KEY uq_date_commodity (price_date, commodity)
+);
+
+-- ------------------------------------------------------------
+-- FIXTURES: simulated past charter deals (for baseline modeling)
+-- ------------------------------------------------------------
+CREATE TABLE fixtures (
+    fixture_id      INT AUTO_INCREMENT PRIMARY KEY,
+    fixture_date    DATE NOT NULL,
+    vessel_id       INT NOT NULL,
+    route_id        INT NOT NULL,
+    commodity       VARCHAR(30) NOT NULL,
+    qty_tonnes      INT NOT NULL,
+    freight_rate_usd_per_tonne DECIMAL(8,2) NOT NULL,
+    fob_price_usd_per_tonne    DECIMAL(8,2) NOT NULL,
+    laycan_start    DATE,
+    laycan_end      DATE,
+    total_cost_usd  DECIMAL(14,2),
+    FOREIGN KEY (vessel_id) REFERENCES vessels(vessel_id),
+    FOREIGN KEY (route_id)  REFERENCES routes(route_id)
+);
+
+-- Helpful indexes for the optimizer / forecasting queries
+CREATE INDEX idx_freight_date ON freight_rates_history(rate_date);
+CREATE INDEX idx_commodity_date ON commodity_prices(price_date);
+CREATE INDEX idx_vessel_open ON vessels(open_date);
+CREATE INDEX idx_fixture_date ON fixtures(fixture_date);
