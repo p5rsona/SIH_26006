@@ -19,6 +19,15 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
+# Person 2's real freight rate forecasting function.
+# forecast.py must be in the same folder as this file (or on your Python path).
+from forecast import forecast_freight_rate
+
+# Person 3's real commodity price forecasting function.
+# ASSUMED function name/signature — confirm against her README's output
+# contract line and update this import if the name differs.
+from person3_commodity_forecast import forecast_commodity_price
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -128,13 +137,15 @@ with tab2:
         route = st.selectbox("Route", ["Australia-EastCoastIndia", "Indonesia-EastCoastIndia", "SouthAfrica-EastCoastIndia"])
         horizon = st.slider("Forecast horizon (weeks)", 4, 26, 12)
     with colB:
-        commodity = st.selectbox("Commodity", ["coal", "grain", "iron_ore"])
-        origin = st.selectbox("Origin", ["Newcastle", "Kalimantan", "Richards Bay"])
+        # Person 3's commodities, from her README (Commodities section)
+        commodity = st.selectbox("Commodity", ["Newcastle coal", "US Gulf wheat", "US Gulf corn"])
 
-    # SWAP HERE: replace mock_forecast_freight_rate with Person 2's real function
-    freight_df = mock_forecast_freight_rate(route, horizon)
-    # SWAP HERE: replace mock_forecast_commodity_price with Person 3's real function
-    price_df = mock_forecast_commodity_price(commodity, origin, horizon)
+    # DONE: now using Person 2's real forecasting function
+    freight_df = forecast_freight_rate(route, horizon)
+    # DONE: now using Person 3's real forecasting function
+    # NOTE: her function only takes (commodity, horizon_weeks) — no origin param
+    # Column names confirmed: date, price, ci_lower, ci_upper (matches chart code below)
+    price_df = forecast_commodity_price(commodity, horizon)
 
     fig1 = go.Figure()
     fig1.add_trace(go.Scatter(x=freight_df["date"], y=freight_df["rate"], name="Forecast", line=dict(color="royalblue")))
