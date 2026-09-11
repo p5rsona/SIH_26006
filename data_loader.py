@@ -1,47 +1,89 @@
 """
 data_loader.py — loads freight rate history for a route.
 
-Tries Person 1's MySQL DB first. If it's unreachable or the route has no
-rows yet, falls back to a synthetic-but-realistic series so Person 2 can
+Tries Person 1's MySQL DB first, then Person 1's freight_rates_history.csv
+seed file (same data). Routes are mapped to a Baltic index via
+config.ROUTE_TO_INDEX, and the daily index is averaged to weekly. If neither
+source has data for the route, falls back to a synthetic series so Person 2 can
 build/test without being blocked on Person 1 (per the team's coordination
 plan: "everyone else builds against mocked/static data in parallel").
 """
 
 from __future__ import annotations
 
+import os
+import zlib
+
 import numpy as np
 import pandas as pd
 
-from config import DB_CONFIG, FREIGHT_RATES_TABLE, RANDOM_SEED
+from config import DB_CONFIG, FREIGHT_RATES_CSV, FREIGHT_RATES_TABLE, RANDOM_SEED, ROUTE_TO_INDEX
+
+
+def _to_weekly(df: pd.DataFrame) -> pd.DataFrame | None:
+    """Person 1's data is daily (business days); the models are weekly
+    (W-MON). Average each week into one row labelled by its Monday."""
+    if df is None or df.empty:
+        return None
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df["rate"] = pd.to_numeric(df["rate"], errors="coerce")
+    weekly = (
+        df.set_index("date")["rate"]
+        .resample("W-MON")
+        .mean()
+        .interpolate()
+        .dropna()
+        .reset_index()
+    )
+    return weekly if len(weekly) else None
 
 
 def _try_load_from_mysql(route: str) -> pd.DataFrame | None:
     """Attempt to load real data from MySQL. Returns None on any failure."""
+    index_name = ROUTE_TO_INDEX.get(route)
+    if index_name is None:
+        return None
+
     try:
         import mysql.connector  # optional dependency, only needed if DB is live
     except ImportError:
         return None
 
     try:
-        conn = mysql.connector.connect(**DB_CONFIG)
-        query = f"""
-            SELECT date, rate, bunker_price
-            FROM {FREIGHT_RATES_TABLE}
-            WHERE route = %s
-            ORDER BY date ASC
-        """
-        df = pd.read_sql(query, conn, params=(route,))
-        conn.close()
+        conn = mysql.connector.connect(**DB_CONFIG, connection_timeout=3)
+        try:
+            cur = conn.cursor()
+            # column names per Person 1's schema.sql
+            cur.execute(
+                f"SELECT rate_date, index_value FROM {FREIGHT_RATES_TABLE} "
+                "WHERE index_name = %s ORDER BY rate_date ASC",
+                (index_name,),
+            )
+            rows = cur.fetchall()
+        finally:
+            conn.close()
 
-        if df.empty:
+        if not rows:
             return None
-
-        df["date"] = pd.to_datetime(df["date"])
-        return df
+        return _to_weekly(pd.DataFrame(rows, columns=["date", "rate"]))
 
     except Exception:
         # DB not reachable, table not seeded yet, wrong credentials, etc.
-        # Silent fallback is intentional here — see generate_synthetic_series.
+        # Silent fallback is intentional here — see load_freight_rate_history.
+        return None
+
+
+def _try_load_from_csv(route: str) -> pd.DataFrame | None:
+    """Falls back to Person 1's freight_rates_history.csv seed file."""
+    index_name = ROUTE_TO_INDEX.get(route)
+    if index_name is None or not os.path.exists(FREIGHT_RATES_CSV):
+        return None
+    try:
+        raw = pd.read_csv(FREIGHT_RATES_CSV)
+        raw = raw[raw["index_name"] == index_name]
+        return _to_weekly(raw.rename(columns={"rate_date": "date", "index_value": "rate"})[["date", "rate"]])
+    except Exception:
         return None
 
 
@@ -58,9 +100,10 @@ def generate_synthetic_series(
     - a correlated bunker (fuel) price series
 
     Route name is hashed into the seed so different routes get different
-    but reproducible series.
+    but reproducible series. (zlib.crc32, not hash(): Python randomizes
+    str hashes per process, so hash() gave a different series every run.)
     """
-    rng = np.random.default_rng(seed + abs(hash(route)) % 10_000)
+    rng = np.random.default_rng(seed + zlib.crc32(route.encode()) % 10_000)
 
     dates = pd.date_range(end=pd.Timestamp.today().normalize(), periods=n_weeks, freq="W-MON")
     n_weeks = len(dates)  # date_range can return periods-1 depending on end-date alignment
@@ -88,18 +131,23 @@ def generate_synthetic_series(
 
 def load_freight_rate_history(route: str) -> pd.DataFrame:
     """
-    Main entry point. Returns DataFrame[date, rate, bunker_price] for a route,
-    sourced from MySQL when available, else synthetic.
+    Main entry point. Returns a weekly DataFrame[date, rate, (bunker_price)]
+    for a route. Source order: MySQL -> freight_rates_history.csv -> synthetic.
+    The source used is recorded in df.attrs["source"].
     """
-    df = _try_load_from_mysql(route)
-    if df is not None:
-        return df
+    for source, loader in (("mysql", _try_load_from_mysql), ("csv", _try_load_from_csv)):
+        df = loader(route)
+        if df is not None:
+            df.attrs["source"] = source
+            return df
 
-    return generate_synthetic_series(route)
+    df = generate_synthetic_series(route)
+    df.attrs["source"] = "synthetic"
+    return df
 
 
 if __name__ == "__main__":
-    for r in ["C5", "C3"]:
+    for r in ["C5", "P1A_82", "TD3C"]:
         d = load_freight_rate_history(r)
-        print(f"{r}: {len(d)} rows, {d['date'].min().date()} -> {d['date'].max().date()}")
+        print(f"{r} [{d.attrs['source']}]: {len(d)} rows, {d['date'].min().date()} -> {d['date'].max().date()}")
         print(d.tail(3), "\n")

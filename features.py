@@ -28,11 +28,18 @@ def add_rolling_features(
     col: str = "rate",
     windows=(4, 8, 12),
 ) -> pd.DataFrame:
-    """Adds rolling mean and rolling volatility (std) features."""
+    """Adds rolling mean and rolling volatility (std) features.
+
+    Windows are shifted by one row so they only use *past* values. Without
+    the shift, row t's rolling mean includes the target value at t itself
+    (data leakage): the model looks great in-sample but its residual-based
+    confidence intervals come out far too narrow.
+    """
     df = df.copy()
+    past = df[col].shift(1)
     for w in windows:
-        df[f"{col}_roll_mean_{w}"] = df[col].rolling(window=w, min_periods=1).mean()
-        df[f"{col}_roll_std_{w}"] = df[col].rolling(window=w, min_periods=2).std()
+        df[f"{col}_roll_mean_{w}"] = past.rolling(window=w, min_periods=1).mean()
+        df[f"{col}_roll_std_{w}"] = past.rolling(window=w, min_periods=2).std()
     return df
 
 

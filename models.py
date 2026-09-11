@@ -18,9 +18,14 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from features import add_bunker_features, add_lag_features, add_rolling_features, add_seasonality_flags, feature_columns
+
+try:
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+    _HAS_STATSMODELS = True
+except ImportError:
+    _HAS_STATSMODELS = False
 
 try:
     from xgboost import XGBRegressor
@@ -66,6 +71,8 @@ class SarimaxModel:
     ]
 
     def __init__(self, order=None, seasonal_order=None):
+        if not _HAS_STATSMODELS:
+            raise ImportError("statsmodels is not installed. `pip install statsmodels`.")
         # explicit order/seasonal_order (if given) is tried first, then
         # the built-in fallback ladder
         self._specs = (
@@ -78,15 +85,30 @@ class SarimaxModel:
         self.seasonal_order = None
 
     def fit(self, df: pd.DataFrame, target_col: str = "rate", date_col: str = "date"):
-        series = df.set_index(date_col)[target_col].asfreq("W-MON")
-        series = series.interpolate()  # SARIMAX needs no gaps
+        # resample (not asfreq): asfreq only keeps rows that fall exactly on
+        # a Monday, so daily or non-Monday data would become all-NaN
+        series = (
+            df.assign(**{date_col: pd.to_datetime(df[date_col])})
+            .set_index(date_col)[target_col]
+            .resample("W-MON").mean()
+            .interpolate()  # SARIMAX needs no gaps
+            .dropna()
+        )
 
         # historical range, used to sanity-check the fit isn't explosive
         hist_min, hist_max = series.min(), series.max()
         hist_span = max(hist_max - hist_min, 1.0)
 
+        # A seasonal model needs at least two full seasons of data; with less
+        # (e.g. Person 1's ~18 months of history) skip straight to the
+        # non-seasonal specs instead of forcing a fit that can't converge.
+        specs = [
+            (o, so) for o, so in self._specs
+            if not so[3] or len(series) >= 2 * so[3]
+        ] or [self._FALLBACK_SPECS[-1]]
+
         last_error = None
-        for order, seasonal_order in self._specs:
+        for order, seasonal_order in specs:
             try:
                 model = SARIMAX(
                     series,
@@ -180,13 +202,21 @@ class XgbForecaster:
         self._feature_cols = cols
 
         X, y = feat_df[cols], feat_df[target_col]
-        self.model.fit(X, y)
 
-        # in-sample residual std, used as a rough CI proxy (see backtest.py
-        # for the honest out-of-sample error, which is what should actually
-        # be reported to judges)
-        preds = self.model.predict(X)
-        self._residual_std = float(np.std(y.values - preds))
+        # CI width comes from one-step-ahead errors on a held-out tail (last
+        # 20%), not in-sample residuals — boosted trees nearly memorize the
+        # training set, so in-sample residuals make the CI far too narrow.
+        n_hold = max(int(len(X) * 0.2), 1)
+        if len(X) - n_hold >= 20:
+            self.model.fit(X.iloc[:-n_hold], y.iloc[:-n_hold])
+            hold_err = y.iloc[-n_hold:].values - self.model.predict(X.iloc[-n_hold:])
+            self._residual_std = float(np.sqrt(np.mean(hold_err ** 2)))
+        else:
+            self._residual_std = None
+
+        self.model.fit(X, y)  # final model uses all the data
+        if self._residual_std is None:
+            self._residual_std = float(np.std(y.values - self.model.predict(X)))
         return self
 
     def predict(self, horizon_weeks: int, alpha: float = 0.05) -> ForecastResult:
@@ -198,26 +228,32 @@ class XgbForecaster:
 
         z = norm.ppf(1 - alpha / 2)
         history = self._history.copy()
-        last_date = pd.to_datetime(history[self.date_col]).max()
+        history[self.date_col] = pd.to_datetime(history[self.date_col])
+        last_date = history[self.date_col].max()
         freq = pd.Timedelta(weeks=1)
 
         preds = []
         for step in range(horizon_weeks):
             next_date = last_date + freq * (step + 1)
 
-            # build features off history-so-far (includes prior synthetic predictions)
+            # Append the week being forecast with an unknown target, then build
+            # its features: lags/rolling windows come from the weeks before it
+            # (actual history plus earlier predictions). Previously the model
+            # was fed the features of the *last observed* week, so it predicted
+            # that week again and labelled it as next week (off by one).
+            new_row = {self.date_col: next_date, self.target_col: np.nan}
+            if "bunker_price" in history.columns:
+                new_row["bunker_price"] = history["bunker_price"].iloc[-1]  # carry forward last known
+            history = pd.concat([history, pd.DataFrame([new_row])], ignore_index=True)
+
             feat_df = build_features(history, target_col=self.target_col, date_col=self.date_col, dropna=False)
             row = feat_df.iloc[[-1]][self._feature_cols].fillna(0)
 
             yhat = float(self.model.predict(row)[0])
             preds.append(yhat)
 
-            # append the prediction as if it were observed, so lag features
-            # for the next step can be built recursively
-            new_row = {self.date_col: next_date, self.target_col: yhat}
-            if "bunker_price" in history.columns:
-                new_row["bunker_price"] = history["bunker_price"].iloc[-1]  # carry forward last known
-            history = pd.concat([history, pd.DataFrame([new_row])], ignore_index=True)
+            # record the prediction so the next step's lag features can use it
+            history.loc[history.index[-1], self.target_col] = yhat
 
         preds = np.array(preds)
         # widen the interval with forecast horizon (uncertainty compounds)

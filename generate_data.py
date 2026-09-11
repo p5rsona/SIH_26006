@@ -11,7 +11,10 @@ import os
 
 random.seed(42)  # reproducible
 
-OUT = "/home/claude/sih_db/seed_csv"
+# Write next to this script (the project folder), which is where
+# load_to_mysql.py, person3_commodity_forecast.py and data_loader.py read
+# them from. (Was a hardcoded Linux sandbox path that doesn't exist here.)
+OUT = os.path.dirname(os.path.abspath(__file__))
 os.makedirs(OUT, exist_ok=True)
 
 HORIZON_DAYS = 540  
@@ -188,7 +191,7 @@ for fid in range(1, N_FIXTURES + 1):
 # ------------------------------------------------------------
 def write_csv(filename, rows, fieldnames):
     path = os.path.join(OUT, filename)
-    with open(path, "w", newline="") as f:
+    with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(rows)

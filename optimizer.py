@@ -129,6 +129,40 @@ def optimize(
         )
 
     # -------------------------------------------------
+    # CONSTRAINT 3:
+    # A vessel can only be on one voyage at a time. If two cargoes have
+    # overlapping laycan windows, the same vessel cannot be assigned to
+    # both — the DWT check above only limits total tonnage, it doesn't
+    # stop the solver from "using" one ship for two simultaneous voyages.
+    # -------------------------------------------------
+
+    for vessel in vessel_list:
+
+        for i, cargo_a in enumerate(cargo_list):
+
+            for cargo_b in cargo_list[i + 1:]:
+
+                if not _overlap(
+                    cargo_a["laycan_start"],
+                    cargo_a["laycan_end"],
+                    cargo_b["laycan_start"],
+                    cargo_b["laycan_end"]
+                ):
+                    continue
+
+                vessel_for_a = sum(
+                    x[cargo_a["cargo"], vessel["vessel"], port["port"]]
+                    for port in ports
+                )
+
+                vessel_for_b = sum(
+                    x[cargo_b["cargo"], vessel["vessel"], port["port"]]
+                    for port in ports
+                )
+
+                model.Add(vessel_for_a + vessel_for_b <= 1)
+
+    # -------------------------------------------------
     # COST CALCULATION
     # -------------------------------------------------
 
@@ -193,7 +227,7 @@ def optimize(
     total_cost = sum(total_cost_terms)
 
     # -------------------------------------------------
-    # CONSTRAINT 3:
+    # CONSTRAINT 4:
     # Budget
     # -------------------------------------------------
 
@@ -217,7 +251,11 @@ def optimize(
     solver = cp_model.CpSolver()
 
     solver.parameters.max_time_in_seconds = 10
-    solver.parameters.num_search_workers = 8
+    # num_search_workers is deprecated in OR-Tools; num_workers replaces it.
+    # Small models (the usual cargo x vessel x port sizes here) solve fastest
+    # single-threaded — this matters because Person 5's Monte Carlo calls
+    # optimize() hundreds/thousands of times.
+    solver.parameters.num_workers = 1 if len(x) <= 500 else 8
 
     status = solver.Solve(model)
 

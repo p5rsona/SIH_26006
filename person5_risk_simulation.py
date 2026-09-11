@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -38,7 +39,9 @@ import pandas as pd
 
 from forecast import forecast_freight_rate
 from optimizer import optimize
-from sample_data import get_sample_data
+from sample_data import _ensure_forecast_file, get_sample_data
+
+ROOT = Path(__file__).resolve().parent
 
 
 # Person 3's forecast CSVs are keyed by full commodity name; cargo dicts
@@ -64,7 +67,8 @@ def _commodity_price_distribution(commodity: str) -> Tuple[float, float]:
     if filename is None:
         raise ValueError(f"No forecast file mapped for commodity '{commodity}'")
 
-    df = pd.read_csv(filename)
+    # regenerates Person 3's CSV if it's missing instead of crashing
+    df = pd.read_csv(_ensure_forecast_file(filename))
     mean_price = float(df["price"].mean())
     # Treat ci_upper/ci_lower as a ~95% band -> back out sigma
     sigma = float(((df["ci_upper"] - df["ci_lower"]) / 2 / 1.96).mean())
@@ -141,10 +145,15 @@ def greedy_baseline(
     """"Always take the first workable option" strategy — no cost
     minimization, just the first vessel/port that satisfies draft, laycan
     and remaining capacity. This is the thing your optimized plan should
-    beat. Returns None if a cargo can't be placed at all (infeasible)."""
+    beat. Returns None if a cargo can't be placed at all (infeasible).
+
+    A vessel can only run one voyage at a time, so besides remaining DWT
+    this also checks that a candidate cargo's laycan window doesn't
+    overlap any laycan window already booked onto that same vessel."""
 
     ports = constraints["ports"]
     remaining_dwt = {v["vessel"]: v["dwt"] for v in vessel_list}
+    vessel_bookings = {v["vessel"]: [] for v in vessel_list}  # booked laycan windows per vessel
     total_cost = 0.0
 
     for cargo in cargo_list:
@@ -153,6 +162,12 @@ def greedy_baseline(
         for vessel in vessel_list:
             if remaining_dwt[vessel["vessel"]] < cargo["quantity"]:
                 continue
+
+            if any(
+                _overlaps(cargo["laycan_start"], cargo["laycan_end"], booked_start, booked_end)
+                for booked_start, booked_end in vessel_bookings[vessel["vessel"]]
+            ):
+                continue  # vessel is already committed to an overlapping voyage
 
             for port in ports:
                 if vessel["draft"] > port["max_draft"]:
@@ -167,6 +182,7 @@ def greedy_baseline(
 
                 total_cost += _cost_breakdown(cargo, vessel, port)
                 remaining_dwt[vessel["vessel"]] -= cargo["quantity"]
+                vessel_bookings[vessel["vessel"]].append((cargo["laycan_start"], cargo["laycan_end"]))
                 placed = True
                 break
 

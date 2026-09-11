@@ -1,7 +1,7 @@
 # Data Dictionary — SIH Maritime Procurement & Chartering Optimizer
 
-Database: `sih_shipping` (MySQL). Schema in `schema.sql`. Seed data in `seed_csv/`.
-Load with `python3 load_to_mysql.py --host <host> --user <user> --password <pw>`.
+Database: `sih_shipping` (MySQL). Schema in `schema.sql`. Seed CSVs in the project folder (or `seed_csv/` if you create one).
+Load with `python load_to_mysql.py --host <host> --user <user> --password <pw>`.
 
 **Scope**: Coal (Newcastle, Richards Bay) and grain (US Gulf) cargo shipped by
 Panamax/Supramax bulk carriers to 4 east-coast India ports (Visakhapatnam, Paradip,

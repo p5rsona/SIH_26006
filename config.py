@@ -13,12 +13,15 @@ DB_CONFIG = {
     "port": int(os.getenv("FR_DB_PORT", "3306")),
     "user": os.getenv("FR_DB_USER", "root"),
     "password": os.getenv("FR_DB_PASSWORD", ""),
-    "database": os.getenv("FR_DB_NAME", "maritime_data"),
+    "database": os.getenv("FR_DB_NAME", "sih_shipping"),  # same DB load_to_mysql.py creates
 }
 
-# Expected table (per Person 1's schema): freight_rates_history
-# Expected columns: date, route, rate, bunker_price (optional)
+# Person 1's table (see schema.sql): freight_rates_history
+# Columns: rate_date, index_name (BDI/BCI/BPI/BSI), index_value — daily, business days
 FREIGHT_RATES_TABLE = "freight_rates_history"
+
+# Local copy of the same table, used when MySQL isn't reachable
+FREIGHT_RATES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "freight_rates_history.csv")
 
 # Routes we forecast. Keep in sync with Person 1's `routes` table.
 SUPPORTED_ROUTES = [
@@ -27,6 +30,17 @@ SUPPORTED_ROUTES = [
     "P1A_82",   # Pacific round voyage
     "TD3C",     # Middle East-China (crude, tanker)
 ]
+
+# Person 1's DB stores Baltic *index* history, not per-route rates, so each
+# route is forecast from the index that tracks its vessel class. Routes
+# mapped to None have no matching index in the data (TD3C is a tanker
+# route; the DB only has dry-bulk indices) and use the synthetic fallback.
+ROUTE_TO_INDEX = {
+    "C5": "BCI",       # Capesize
+    "C3": "BCI",       # Capesize
+    "P1A_82": "BPI",   # Panamax
+    "TD3C": None,      # tanker — no index in the dataset
+}
 
 # Monsoon months relevant to east-coast India ports (affects laycan/draft
 # and therefore freight rates on India-linked routes) — June to September.

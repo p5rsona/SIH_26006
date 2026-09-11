@@ -24,6 +24,13 @@ _MODEL_REGISTRY = {
 }
 
 
+@lru_cache(maxsize=32)
+def _cached_history(route: str):
+    """Internal cache so repeated calls (e.g. from Person 5's Monte Carlo
+    loop, which may call this many times per route) don't re-hit MySQL."""
+    return load_freight_rate_history(route)
+
+
 def forecast_freight_rate(
     route: str,
     horizon_weeks: int,
@@ -57,7 +64,7 @@ def forecast_freight_rate(
     if model not in _MODEL_REGISTRY:
         raise ValueError(f"Unknown model '{model}'. Choose from {list(_MODEL_REGISTRY)}")
 
-    history = load_freight_rate_history(route)
+    history = _cached_history(route)
 
     model_instance = _MODEL_REGISTRY[model]()
     model_instance.fit(history, target_col="rate", date_col="date")
@@ -116,13 +123,6 @@ def forecast_with_disagreement(
     out["disagreement_pct"] = (out["disagreement"] / out["rate"]) * 100
 
     return out
-
-
-@lru_cache(maxsize=32)
-def _cached_history(route: str):
-    """Internal cache so repeated calls (e.g. from Person 5's Monte Carlo
-    loop, which may call this many times per route) don't re-hit MySQL."""
-    return load_freight_rate_history(route)
 
 
 if __name__ == "__main__":
