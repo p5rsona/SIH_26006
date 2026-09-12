@@ -11,8 +11,10 @@ import os
 
 random.seed(42)  # reproducible
 
-here = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(here, "seed_csv")
+# Write next to this script (the project folder), which is where
+# load_to_mysql.py, person3_commodity_forecast.py and data_loader.py read
+# them from. (Was a hardcoded Linux sandbox path that doesn't exist here.)
+OUT = os.path.dirname(os.path.abspath(__file__))
 os.makedirs(OUT, exist_ok=True)
 
 HORIZON_DAYS = 540  
@@ -32,6 +34,11 @@ ports = [
     dict(port_id=8, port_name="Sagar-Sandheads", country="India", latitude=21.6500, longitude=88.0333, max_draft_m=10.5, loa_m=220.0, beam_m=32.0, num_berths=0, max_dwt_capable=40000, handling_rate_tpd=10000, notes="Anchorage point / lighterage"),
     dict(port_id=9, port_name="Haldia", country="India", latitude=22.0250, longitude=88.0620, max_draft_m=8.5, loa_m=230.0, beam_m=32.0, num_berths=14, max_dwt_capable=40000, handling_rate_tpd=15000, notes="Riverine port, draft restricted"),
 ]
+
+# Fixed cost of one port call (dues, pilotage, towage, agency). Scaled with the
+# size of ship the port handles. Optimizer input - see data_dictionary.md.
+for p in ports:
+    p["port_cost_usd"] = round(60000 + p["max_dwt_capable"] * 0.9, -3)
 
 # ------------------------------------------------------------
 # 2. ORIGIN PORTS (Updated with Mozambique, Indonesia, Russia)
@@ -71,11 +78,13 @@ for o in origin_ports:
 # 4. VESSELS (Added Capesize class)
 # ------------------------------------------------------------
 vessel_classes = {
-    "Capesize":  dict(dwt=(110000, 180000), speed=(13.5, 15.0), cons_laden=(45, 55), cons_ballast=(35, 45)),
-    "Panamax":   dict(dwt=(65000, 82000), speed=(12.5, 14.5), cons_laden=(28, 34), cons_ballast=(24, 29)),
-    "Supramax":  dict(dwt=(50000, 60000), speed=(13.0, 14.5), cons_laden=(24, 29), cons_ballast=(20, 25)),
-    "Handysize": dict(dwt=(28000, 40000), speed=(12.0, 14.0), cons_laden=(18, 23), cons_ballast=(15, 19)),
+    "Capesize":  dict(dwt=(110000, 180000), speed=(13.5, 15.0), cons_laden=(45, 55), cons_ballast=(35, 45), draft=(17.0, 18.5)),
+    "Panamax":   dict(dwt=(65000, 82000), speed=(12.5, 14.5), cons_laden=(28, 34), cons_ballast=(24, 29), draft=(13.5, 14.5)),
+    "Supramax":  dict(dwt=(50000, 60000), speed=(13.0, 14.5), cons_laden=(24, 29), cons_ballast=(20, 25), draft=(12.0, 13.0)),
+    "Handysize": dict(dwt=(28000, 40000), speed=(12.0, 14.0), cons_laden=(18, 23), cons_ballast=(15, 19), draft=(9.5, 11.0)),
 }
+# How long a vessel stays open for charter after its open_date
+AVAILABILITY_WINDOW_DAYS = 180
 vessels = []
 N_VESSELS = 30
 for i in range(1, N_VESSELS + 1):
@@ -88,11 +97,13 @@ for i in range(1, N_VESSELS + 1):
         vessel_name=f"MV {vclass[:4].upper()}-{i:03d}",
         vessel_class=vclass,
         dwt=random.randint(*spec["dwt"]),
+        draft_m=round(random.uniform(*spec["draft"]), 1),
         speed_knots=round(random.uniform(*spec["speed"]), 1),
         consumption_tpd_laden=round(random.uniform(*spec["cons_laden"]), 1),
         consumption_tpd_ballast=round(random.uniform(*spec["cons_ballast"]), 1),
         open_port_id=open_port,
         open_date=(START_DATE + timedelta(days=open_offset)).isoformat(),
+        available_until=(START_DATE + timedelta(days=open_offset + AVAILABILITY_WINDOW_DAYS)).isoformat(),
     ))
 
 # ------------------------------------------------------------
@@ -114,7 +125,7 @@ def synth_series(n_days, start_val, target_end_val, vol, floor_val, seed_offset)
 freight_rows = []
 dates = [START_DATE + timedelta(days=d) for d in range(HORIZON_DAYS)]
 
-bdi_series = synth_series(HORIZON_DAYS, 2100, 3500, 45, 900, 1)
+bdi_series = synth_series(HORIZON_DAYS, 1900, 3200, 45, 900, 1)
 bci_series = synth_series(HORIZON_DAYS, 3200, 5600, 110, 1200, 2)
 bpi_series = synth_series(HORIZON_DAYS, 1500, 2430, 35, 700, 3)
 bsi_series = synth_series(HORIZON_DAYS, 1100, 1660, 25, 600, 4)
@@ -129,7 +140,7 @@ for i, d in enumerate(dates):
 # ------------------------------------------------------------
 # 6. COMMODITY PRICES
 # ------------------------------------------------------------
-coal_series = synth_series(HORIZON_DAYS, 115, 136, 2.5, 70, 11)
+coal_series = synth_series(HORIZON_DAYS, 115, 105, 2.5, 70, 11)
 wheat_series = synth_series(HORIZON_DAYS, 230, 225, 4.0, 150, 12)
 corn_series = synth_series(HORIZON_DAYS, 215, 218, 3.5, 140, 13)
 
@@ -189,7 +200,7 @@ for fid in range(1, N_FIXTURES + 1):
 # ------------------------------------------------------------
 def write_csv(filename, rows, fieldnames):
     path = os.path.join(OUT, filename)
-    with open(path, "w", newline="") as f:
+    with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(rows)

@@ -25,10 +25,20 @@ _MODEL_REGISTRY = {
 
 
 @lru_cache(maxsize=32)
-def _cached_history(route: str):
+def _cached_load(route: str):
     """Internal cache so repeated calls (e.g. from Person 5's Monte Carlo
-    loop, which may call this many times per route) don't re-hit MySQL."""
+    loop, which may call this many times per route) don't re-hit Supabase."""
     return load_freight_rate_history(route)
+
+
+def _cached_history(route: str):
+    """A copy of the cached history. The cache hands back the same object
+    every call, so without this a caller that adds a column (or sorts in
+    place) would corrupt every later forecast for that route."""
+    cached = _cached_load(route)
+    out = cached.copy()
+    out.attrs = dict(cached.attrs)
+    return out
 
 
 def forecast_freight_rate(

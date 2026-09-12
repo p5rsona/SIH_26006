@@ -9,6 +9,7 @@ from ortools.sat.python import cp_model
 
 import weather
 
+
 OUTPUT_COLUMNS = [
     "cargo",
     "vessel",
@@ -36,7 +37,7 @@ def optimize(
     cargo_list: List[Dict[str, Any]],
     vessel_list: List[Dict[str, Any]],
     constraints: Dict[str, Any],
-    weather_multiplier: float = 1.0,
+    weather_multiplier: float = 1.0
 ) -> pd.DataFrame:
     """
     weather_multiplier: scales the expected weather/cyclone-delay cost
@@ -65,6 +66,23 @@ def optimize(
             weather_blocked[key] = weather.is_extreme_risk(
                 port["port"], cargo["laycan_start"], cargo["laycan_end"],
             )
+
+    # Optional per-voyage economics from fleet_data.py:
+    #   {(cargo, vessel, port): {"freight_per_tonne": ..., "voyage_fixed": ...}}
+    # Freight depends on the route sailed and the repositioning (ballast) cost
+    # depends on where the vessel is open, so neither is really one number per
+    # vessel. When no matrix is given we fall back to the vessel's own
+    # freight_cost_per_tonne / fixed_cost, so existing callers are unaffected.
+    cost_matrix = constraints.get("cost_matrix") or {}
+
+    def voyage_costs(cargo, vessel, port):
+        entry = cost_matrix.get((cargo["cargo"], vessel["vessel"], port["port"]))
+        if entry is None:
+            return (
+                float(vessel["freight_cost_per_tonne"]),
+                float(vessel["fixed_cost"]),
+            )
+        return float(entry["freight_per_tonne"]), float(entry["voyage_fixed"])
 
     model = cp_model.CpModel()
 
@@ -99,6 +117,10 @@ def optimize(
                 # worst-day risk at this port is too high to route cargo
                 # there at all (see weather.CYCLONE_HARD_BLOCK_THRESHOLD)
                 if weather_blocked[(cargo["cargo"], port["port"])]:
+                    model.Add(x[key] == 0)
+
+                # Port size restriction (largest vessel the port can berth)
+                if port.get("max_dwt_capable") and vessel["dwt"] > port["max_dwt_capable"]:
                     model.Add(x[key] == 0)
 
                 # Laycan / availability restriction
@@ -225,19 +247,11 @@ def optimize(
                     port["port"]
                 ]
 
-                freight_cost = int(
-                    round(
-                        float(
-                            vessel["freight_cost_per_tonne"]
-                        )
-                    )
-                )
+                freight, fixed = voyage_costs(cargo, vessel, port)
 
-                fixed_cost = int(
-                    round(
-                        float(vessel["fixed_cost"])
-                    )
-                )
+                freight_cost = int(round(freight))
+
+                fixed_cost = int(round(fixed))
 
                 port_cost = int(
                     round(
@@ -335,13 +349,7 @@ def optimize(
                         )
                     )
 
-                    freight = float(
-                        vessel["freight_cost_per_tonne"]
-                    )
-
-                    fixed = float(
-                        vessel["fixed_cost"]
-                    )
+                    freight, fixed = voyage_costs(cargo, vessel, port)
 
                     port_cost = float(
                         port["port_cost"]

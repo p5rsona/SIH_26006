@@ -9,4 +9,3 @@ xgboost>=2.0
 ortools>=9.8
 streamlit>=1.50
 plotly>=5.0
-mysql-connector-python>=8.0

@@ -29,7 +29,7 @@ WHAT'S REAL vs SYNTHETIC (same convention as data_dictionary.md)
 | Exact per-port numeric exposure multipliers       | Synthetic | Calibrated to the real landfall pattern above — not an official per-port risk index |
 | Per-event expected port-closure / queueing delay  | Synthetic | Ballpark from press reports of past India east-coast cyclone port closures (typically 1-4 days shut, longer queue-clearing) |
 | Demurrage rate used to price the delay in dollars | Synthetic | Typical Panamax/Supramax demurrage ballpark, not a live quote |
-| Live cyclone alerts                               | Optional  | `fetch_live_cyclone_alert()` will use a reachable IMD/GDACS-style feed if the deployment has internet access; this sandbox does not, so it always falls back to the climatology model below (same fallback style as data_loader.py's MySQL -> CSV -> synthetic chain) |
+| Live cyclone alerts                               | Optional  | `fetch_live_cyclone_alert()` will use a reachable IMD/GDACS-style feed if the deployment has internet access; this sandbox does not, so it always falls back to the climatology model below (same fallback style as data_loader.py's Supabase -> CSV -> synthetic chain) |
 
 None of this replaces a real IMD warning feed for an actual voyage — it's a
 planning-stage risk factor for the optimizer/forecast, not a safety system.
@@ -197,7 +197,7 @@ def fetch_live_cyclone_alert(port_name: str, timeout: float = 3.0) -> Optional[d
     """Optional live-data hook. Tries a public cyclone-tracking feed; returns
     None (and the caller should fall back to the climatology model above) if
     it's unreachable — this sandbox has no general internet access, but a
-    real deployment might. Mirrors data_loader.py's MySQL -> CSV -> synthetic
+    real deployment might. Mirrors data_loader.py's Supabase -> CSV -> synthetic
     fallback chain, just one step shorter."""
     try:
         import requests  # local import: optional dependency, only needed here

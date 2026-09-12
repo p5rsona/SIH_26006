@@ -1,8 +1,8 @@
 """
 data_loader.py — loads freight rate history for a route.
 
-Tries Person 1's MySQL DB first, then Person 1's freight_rates_history.csv
-seed file (same data). Routes are mapped to a Baltic index via
+Tries Supabase first (see db.py), then the CSV seed
+files (the same data). Routes are mapped to a Baltic index via
 config.ROUTE_TO_INDEX, and the daily index is averaged to weekly. If neither
 source has data for the route, falls back to a synthetic series so Person 2 can
 build/test without being blocked on Person 1 (per the team's coordination
@@ -17,7 +17,14 @@ import zlib
 import numpy as np
 import pandas as pd
 
-from config import DB_CONFIG, FREIGHT_RATES_CSV, FREIGHT_RATES_TABLE, RANDOM_SEED, ROUTE_TO_INDEX
+
+from config import (
+    FREIGHT_RATES_CSV,
+    FREIGHT_RATES_REAL_CSV,
+    FREIGHT_RATES_TABLE,
+    RANDOM_SEED,
+    ROUTE_TO_INDEX,
+)
 
 
 def _to_weekly(df: pd.DataFrame) -> pd.DataFrame | None:
@@ -39,52 +46,50 @@ def _to_weekly(df: pd.DataFrame) -> pd.DataFrame | None:
     return weekly if len(weekly) else None
 
 
-def _try_load_from_mysql(route: str) -> pd.DataFrame | None:
-    """Attempt to load real data from MySQL. Returns None on any failure."""
+def _try_load_from_db(route: str) -> pd.DataFrame | None:
+    """Loads the index series from the Supabase database (see db.py).
+    Returns None if there's no database or no rows."""
     index_name = ROUTE_TO_INDEX.get(route)
     if index_name is None:
         return None
 
-    try:
-        import mysql.connector  # optional dependency, only needed if DB is live
-    except ImportError:
+    from db import read_sql
+
+    # column names per schema_postgres.sql
+    df = read_sql(
+        f"SELECT rate_date, index_value FROM {FREIGHT_RATES_TABLE} "
+        "WHERE index_name = :index_name ORDER BY rate_date ASC",
+        {"index_name": index_name},
+    )
+    if df is None or df.empty:
         return None
-
-    try:
-        conn = mysql.connector.connect(**DB_CONFIG, connection_timeout=3)
-        try:
-            cur = conn.cursor()
-            # column names per Person 1's schema.sql
-            cur.execute(
-                f"SELECT rate_date, index_value FROM {FREIGHT_RATES_TABLE} "
-                "WHERE index_name = %s ORDER BY rate_date ASC",
-                (index_name,),
-            )
-            rows = cur.fetchall()
-        finally:
-            conn.close()
-
-        if not rows:
-            return None
-        return _to_weekly(pd.DataFrame(rows, columns=["date", "rate"]))
-
-    except Exception:
-        # DB not reachable, table not seeded yet, wrong credentials, etc.
-        # Silent fallback is intentional here — see load_freight_rate_history.
-        return None
+    return _to_weekly(df.rename(columns={"rate_date": "date", "index_value": "rate"}))
 
 
 def _try_load_from_csv(route: str) -> pd.DataFrame | None:
-    """Falls back to Person 1's freight_rates_history.csv seed file."""
+    """Reads the index series from a CSV: the real file written by
+    fetch_real_data.py first, then Person 1's synthetic seed file."""
     index_name = ROUTE_TO_INDEX.get(route)
-    if index_name is None or not os.path.exists(FREIGHT_RATES_CSV):
+    if index_name is None:
         return None
-    try:
-        raw = pd.read_csv(FREIGHT_RATES_CSV)
-        raw = raw[raw["index_name"] == index_name]
-        return _to_weekly(raw.rename(columns={"rate_date": "date", "index_value": "rate"})[["date", "rate"]])
-    except Exception:
-        return None
+
+    for path in (FREIGHT_RATES_REAL_CSV, FREIGHT_RATES_CSV):
+        if not os.path.exists(path):
+            continue
+        try:
+            raw = pd.read_csv(path)
+            raw = raw[raw["index_name"] == index_name]
+            if raw.empty:
+                continue
+            weekly = _to_weekly(
+                raw.rename(columns={"rate_date": "date", "index_value": "rate"})[["date", "rate"]]
+            )
+            if weekly is not None:
+                weekly.attrs["file"] = os.path.basename(path)
+                return weekly
+        except Exception:
+            continue
+    return None
 
 
 def generate_synthetic_series(
@@ -132,13 +137,13 @@ def generate_synthetic_series(
 def load_freight_rate_history(route: str) -> pd.DataFrame:
     """
     Main entry point. Returns a weekly DataFrame[date, rate, (bunker_price)]
-    for a route. Source order: MySQL -> freight_rates_history.csv -> synthetic.
+    for a route. Source order: database -> real/synthetic CSV -> synthetic.
     The source used is recorded in df.attrs["source"].
     """
-    for source, loader in (("mysql", _try_load_from_mysql), ("csv", _try_load_from_csv)):
+    for source, loader in (("database", _try_load_from_db), ("csv", _try_load_from_csv)):
         df = loader(route)
         if df is not None:
-            df.attrs["source"] = source
+            df.attrs["source"] = df.attrs.get("file", source)
             return df
 
     df = generate_synthetic_series(route)

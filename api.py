@@ -14,6 +14,7 @@ calls the teammate module that already owns that logic:
     /forecast/commodity  -> person3_commodity_forecast.py (Person 3)
     /optimize            -> optimizer.py                  (Person 4)
     /simulate            -> person5_risk_simulation.py    (Person 5)
+    /weather/*           -> weather.py                     (weather & cyclone risk)
 
 The Pydantic models below are the team's interface contracts written as code:
 if a module ever returns a different shape, the API fails loudly here instead
@@ -81,7 +82,8 @@ class PlanRow(BaseModel):
     port: str
     qty: int
     cost_breakdown: Dict[str, float] = Field(
-        description="procurement_cost, freight_cost, vessel_fixed_cost, port_cost, total_cost"
+        description="procurement_cost, freight_cost, vessel_fixed_cost, port_cost, "
+                    "weather_risk_cost, total_cost"
     )
 
 
@@ -128,6 +130,30 @@ class ScenarioRow(BaseModel):
     optimized_cost: Optional[float]
     baseline_cost: Optional[float]
     savings_pct: Optional[float]
+    weather_multiplier: Optional[float] = Field(
+        default=None,
+        description="How much worse/better than climatology weather turned out "
+                    "in this scenario (1.0 = as expected)",
+    )
+
+
+class WeatherRiskResponse(BaseModel):
+    port: str
+    laycan_start: str
+    laycan_end: str
+    risk_score: float = Field(description="Worst-day cyclone risk over the window, 0-1")
+    expected_delay_days: float
+    weather_risk_cost: float = Field(description="Expected delay priced at the demurrage rate, USD")
+    hard_blocked: bool = Field(
+        description="True if the optimizer refuses to route cargo to this port for these dates"
+    )
+
+
+class ClimatologyRow(BaseModel):
+    port: str
+    month: int
+    month_name: str
+    risk_score: float
 
 
 class SimulateResponse(BaseModel):
@@ -169,6 +195,7 @@ def health() -> HealthResponse:
         ("forecast_commodity", "person3_commodity_forecast"),
         ("optimizer", "optimizer"),
         ("risk_simulation", "person5_risk_simulation"),
+        ("weather", "weather"),
     ]:
         try:
             __import__(target)
@@ -273,6 +300,41 @@ def fleet(
         return [VesselOut(**{k: v[k] for k in VesselOut.__annotations__}) for v in vessel_list]
     except Exception as e:
         _fail(e, "fleet lookup")
+
+
+@app.get("/weather/risk", response_model=WeatherRiskResponse, tags=["weather"])
+def weather_risk(
+    port: str = Query("Paradip", description="Destination port, e.g. Paradip / Visakhapatnam / Kakinada / Krishnapatnam"),
+    laycan_start: str = Query("2026-10-20"),
+    laycan_end: str = Query("2026-11-05"),
+):
+    """Cyclone/weather risk for one port and laycan window — the same numbers
+    the optimizer prices into its port choice (weather.py)."""
+    try:
+        import weather
+
+        return WeatherRiskResponse(
+            port=port,
+            laycan_start=laycan_start,
+            laycan_end=laycan_end,
+            risk_score=weather.window_risk(port, laycan_start, laycan_end),
+            expected_delay_days=weather.expected_delay_days(port, laycan_start, laycan_end),
+            weather_risk_cost=weather.weather_cost_adder(port, laycan_start, laycan_end),
+            hard_blocked=weather.is_extreme_risk(port, laycan_start, laycan_end),
+        )
+    except Exception as e:
+        _fail(e, "weather risk")
+
+
+@app.get("/weather/climatology", response_model=List[ClimatologyRow], tags=["weather"])
+def weather_climatology():
+    """Monthly cyclone-risk climatology per port, for charting."""
+    try:
+        import weather
+
+        return _records(weather.monthly_climatology_table())
+    except Exception as e:
+        _fail(e, "weather climatology")
 
 
 @app.post("/simulate", response_model=SimulateResponse, tags=["risk"])

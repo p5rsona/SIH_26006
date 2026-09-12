@@ -21,6 +21,7 @@ CREATE TABLE ports (
     num_berths          INT,
     max_dwt_capable     INT,                        -- largest vessel DWT the port can realistically berth
     handling_rate_tpd   INT,                        -- daily discharge rate (tonnes per day) to calculate port stay
+    port_cost_usd       DECIMAL(12,2),              -- fixed cost of one call (port dues, pilotage, agency) - optimizer input
     notes               VARCHAR(255)
 );
 
@@ -55,11 +56,13 @@ CREATE TABLE vessels (
     vessel_name           VARCHAR(50) NOT NULL,
     vessel_class          VARCHAR(30) NOT NULL,   
     dwt                   INT NOT NULL,
+    draft_m               DECIMAL(5,2),            -- laden draft - checked against ports.max_draft_m
     speed_knots           DECIMAL(4,1) NOT NULL,
     consumption_tpd_laden DECIMAL(5,1) NOT NULL,  -- tons fuel/day laden
     consumption_tpd_ballast DECIMAL(5,1) NOT NULL,
     open_port_id          INT,                     -- where the vessel becomes available
     open_date             DATE NOT NULL,
+    available_until       DATE,                    -- end of the charter availability window
     FOREIGN KEY (open_port_id) REFERENCES ports(port_id)
 );
 

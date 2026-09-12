@@ -1,32 +1,22 @@
 """
-load_to_db.py — creates the schema and loads the seed CSVs into whichever
-database db.py is pointed at: local MySQL, or Postgres/Supabase.
+load_to_db.py — creates the schema and loads the seed CSVs into Supabase.
 
-    # local MySQL (same as load_to_mysql.py)
-    set DB_BACKEND=mysql
-    set FR_DB_PASSWORD=yourpassword
+    # put the connection URL in .env first (copy .env.example), then:
     python load_to_db.py
 
-    # Supabase (Project Settings -> Database -> Connection string -> URI)
-    set DB_BACKEND=postgres
-    set SUPABASE_DB_URL=postgresql://postgres.<ref>:<password>@<host>:6543/postgres
-    python load_to_db.py
-
-Needs: pip install sqlalchemy psycopg2-binary   (Postgres)
-       pip install sqlalchemy mysql-connector-python   (MySQL)
+Needs: pip install sqlalchemy psycopg2-binary
 
 It drops and recreates the tables every run, then loads the CSVs from the
 project folder (or seed_csv/ if that folder exists).
 
-MySQL note: the `sih_shipping` database must already exist (CREATE DATABASE
-sih_shipping;) because the connection selects it. `load_to_mysql.py` still
-works too and creates the database for you.
+Flags:
+    --schema-only   create the tables, load nothing
+    --data-only     load the CSVs into tables that already exist
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -40,7 +30,7 @@ TABLE_ORDER = [
     "freight_rates_history", "commodity_prices", "fixtures",
 ]
 
-# tables whose primary key is an identity/auto-increment column
+# tables whose primary key is an identity column
 PK_COLUMNS = {
     "ports": "port_id",
     "origin_ports": "origin_id",
@@ -50,6 +40,8 @@ PK_COLUMNS = {
     "commodity_prices": "price_id",
     "fixtures": "fixture_id",
 }
+
+SCHEMA_FILE = "schema_postgres.sql"
 
 
 def _csv_dir() -> Path:
@@ -63,7 +55,7 @@ def _split_statements(sql: str) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Load schema + seed CSVs into MySQL or Supabase")
+    parser = argparse.ArgumentParser(description="Load schema + seed CSVs into Supabase")
     parser.add_argument("--schema-only", action="store_true")
     parser.add_argument("--data-only", action="store_true")
     args = parser.parse_args()
@@ -73,12 +65,11 @@ def main() -> int:
     engine = db.get_engine()
     if engine is None:
         print(f"Cannot reach the database: {db.status()}")
-        print("Check DB_BACKEND and the connection settings (see db.py), then retry.")
+        print("Check SUPABASE_DB_URL in .env (see .env.example), then retry.")
         return 1
 
     print(db.status())
-    is_postgres = db.backend() == "postgres"
-    schema_file = ROOT / ("schema_postgres.sql" if is_postgres else "schema.sql")
+    schema_file = ROOT / SCHEMA_FILE
     csv_dir = _csv_dir()
 
     from sqlalchemy import text
@@ -86,11 +77,10 @@ def main() -> int:
     if not args.data_only:
         print(f"Creating schema from {schema_file.name} ...")
         statements = _split_statements(schema_file.read_text(encoding="utf-8"))
-        cascade = " CASCADE" if is_postgres else ""
         with engine.begin() as conn:
             # children first, so foreign keys don't block the drop
             for table in reversed(TABLE_ORDER):
-                conn.execute(text(f"DROP TABLE IF EXISTS {table}{cascade}"))
+                conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
             for statement in statements:
                 conn.execute(text(statement))
         print(f"  {len(statements)} statements executed")
@@ -111,14 +101,14 @@ def main() -> int:
         # explicitly, so the next insert would collide. Move the sequence past
         # the highest id we just loaded.
         pk = PK_COLUMNS.get(table)
-        if is_postgres and pk and pk in df.columns:
+        if pk and pk in df.columns:
             with engine.begin() as conn:
                 conn.execute(text(
                     f"SELECT setval(pg_get_serial_sequence('{table}', '{pk}'), "
                     f"COALESCE((SELECT MAX({pk}) FROM {table}), 1))"
                 ))
 
-    print("\nDone. The forecasting, optimizer and API modules will now read from the database.")
+    print("\nDone. The forecasting, optimizer and API modules will now read from Supabase.")
     return 0
 
 

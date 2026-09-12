@@ -206,6 +206,7 @@ def greedy_baseline(
                     continue
                 if cargo.get("allowed_ports") and port["port"] not in cargo["allowed_ports"]:
                     continue
+
                 # A port shut by an active cyclone is closed regardless of
                 # strategy — the naive baseline doesn't get to ignore that.
                 if weather.is_extreme_risk(port["port"], cargo["laycan_start"], cargo["laycan_end"]):
@@ -311,9 +312,9 @@ def summarize(cost_distribution_df: pd.DataFrame) -> Dict[str, float]:
         "p5_savings_pct": df["savings_pct"].quantile(0.05),
         "p95_savings_pct": df["savings_pct"].quantile(0.95),
         "prob_optimized_beats_baseline": (df["optimized_cost"] < df["baseline_cost"]).mean(),
-        "worst_case_optimized_cost_p95": df["optimized_cost"].quantile(0.95),
         "mean_weather_multiplier": df["weather_multiplier"].mean(),
         "prob_severe_weather_scenario": (df["weather_multiplier"] > 1.5).mean(),
+        "worst_case_optimized_cost_p95": df["optimized_cost"].quantile(0.95),
     }
 
 
