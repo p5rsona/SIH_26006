@@ -35,6 +35,11 @@ ports = [
     dict(port_id=9, port_name="Haldia", country="India", latitude=22.0250, longitude=88.0620, max_draft_m=8.5, loa_m=230.0, beam_m=32.0, num_berths=14, max_dwt_capable=40000, handling_rate_tpd=15000, notes="Riverine port, draft restricted"),
 ]
 
+# Fixed cost of one port call (dues, pilotage, towage, agency). Scaled with the
+# size of ship the port handles. Optimizer input - see data_dictionary.md.
+for p in ports:
+    p["port_cost_usd"] = round(60000 + p["max_dwt_capable"] * 0.9, -3)
+
 # ------------------------------------------------------------
 # 2. ORIGIN PORTS (Updated with Mozambique, Indonesia, Russia)
 # ------------------------------------------------------------
@@ -73,11 +78,13 @@ for o in origin_ports:
 # 4. VESSELS (Added Capesize class)
 # ------------------------------------------------------------
 vessel_classes = {
-    "Capesize":  dict(dwt=(110000, 180000), speed=(13.5, 15.0), cons_laden=(45, 55), cons_ballast=(35, 45)),
-    "Panamax":   dict(dwt=(65000, 82000), speed=(12.5, 14.5), cons_laden=(28, 34), cons_ballast=(24, 29)),
-    "Supramax":  dict(dwt=(50000, 60000), speed=(13.0, 14.5), cons_laden=(24, 29), cons_ballast=(20, 25)),
-    "Handysize": dict(dwt=(28000, 40000), speed=(12.0, 14.0), cons_laden=(18, 23), cons_ballast=(15, 19)),
+    "Capesize":  dict(dwt=(110000, 180000), speed=(13.5, 15.0), cons_laden=(45, 55), cons_ballast=(35, 45), draft=(17.0, 18.5)),
+    "Panamax":   dict(dwt=(65000, 82000), speed=(12.5, 14.5), cons_laden=(28, 34), cons_ballast=(24, 29), draft=(13.5, 14.5)),
+    "Supramax":  dict(dwt=(50000, 60000), speed=(13.0, 14.5), cons_laden=(24, 29), cons_ballast=(20, 25), draft=(12.0, 13.0)),
+    "Handysize": dict(dwt=(28000, 40000), speed=(12.0, 14.0), cons_laden=(18, 23), cons_ballast=(15, 19), draft=(9.5, 11.0)),
 }
+# How long a vessel stays open for charter after its open_date
+AVAILABILITY_WINDOW_DAYS = 180
 vessels = []
 N_VESSELS = 30
 for i in range(1, N_VESSELS + 1):
@@ -90,11 +97,13 @@ for i in range(1, N_VESSELS + 1):
         vessel_name=f"MV {vclass[:4].upper()}-{i:03d}",
         vessel_class=vclass,
         dwt=random.randint(*spec["dwt"]),
+        draft_m=round(random.uniform(*spec["draft"]), 1),
         speed_knots=round(random.uniform(*spec["speed"]), 1),
         consumption_tpd_laden=round(random.uniform(*spec["cons_laden"]), 1),
         consumption_tpd_ballast=round(random.uniform(*spec["cons_ballast"]), 1),
         open_port_id=open_port,
         open_date=(START_DATE + timedelta(days=open_offset)).isoformat(),
+        available_until=(START_DATE + timedelta(days=open_offset + AVAILABILITY_WINDOW_DAYS)).isoformat(),
     ))
 
 # ------------------------------------------------------------
