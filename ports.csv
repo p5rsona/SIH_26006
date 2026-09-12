@@ -1,5 +1,10 @@
-port_id,port_name,country,latitude,longitude,max_draft_m,num_berths,max_dwt_capable,port_cost_usd,notes
-1,Visakhapatnam,India,17.6868,83.2185,14.0,30,95000,146000.0,Deepest natural harbour on east coast; West Quay-1 max draft 14.0m
-2,Paradip,India,20.2654,86.6763,16.0,21,118000,166000.0,"Handles Capesize up to 118,000 DWT at 14.5m draft"
-3,Krishnapatnam,India,14.25,80.1167,18.5,26,180000,222000.0,India's deepest port; handles largest bulk carriers
-4,Kakinada,India,16.975,82.279,12.0,4,50000,105000.0,"Deep water channel 12m; Panamax/Supramax only, not Capesize"
+port_id,port_name,country,latitude,longitude,max_draft_m,loa_m,beam_m,num_berths,max_dwt_capable,handling_rate_tpd,notes
+1,Visakhapatnam,India,17.6868,83.2185,14.0,260.0,43.0,30,95000,25000,West Quay-1 max draft 14.0m
+2,Paradip,India,20.2654,86.6763,16.0,300.0,48.0,21,118000,35000,"Handles Capesize up to 118,000 DWT"
+3,Krishnapatnam,India,14.25,80.1167,18.5,320.0,50.0,26,180000,45000,Deepest port; handles largest bulk carriers
+4,Kakinada,India,16.975,82.279,12.0,230.0,32.0,4,50000,15000,Panamax/Supramax only
+5,Gangavaram,India,17.6225,83.2422,21.0,300.0,50.0,9,200000,40000,Capable of fully laden Capesize
+6,Gopalpur,India,19.3,84.975,14.5,260.0,43.0,3,80000,20000,All-weather deep water port
+7,Dhamra,India,20.825,86.975,18.0,320.0,50.0,5,180000,50000,Deep draft port
+8,Sagar-Sandheads,India,21.65,88.0333,10.5,220.0,32.0,0,40000,10000,Anchorage point / lighterage
+9,Haldia,India,22.025,88.062,8.5,230.0,32.0,14,40000,15000,"Riverine port, draft restricted"
