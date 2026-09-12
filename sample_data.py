@@ -4,40 +4,12 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
 
-# filename -> commodity key expected by person3_commodity_forecast.py
-_FORECAST_FILE_COMMODITY = {
-    "forecast_coal_newcastle.csv": "coal_newcastle",
-    "forecast_wheat_gulf.csv": "wheat_gulf",
-    "forecast_corn_gulf.csv": "corn_gulf",
-}
-
-
-def _ensure_forecast_file(filename: str) -> Path:
-    """Person 3's forecast_<commodity>.csv files are a build artifact of
-    person3_commodity_forecast.py, not something checked into the repo.
-    If they're missing (e.g. on a fresh checkout), generate them here
-    instead of failing with a raw FileNotFoundError."""
-    path = ROOT / filename
-    if path.exists():
-        return path
-
-    commodity = _FORECAST_FILE_COMMODITY.get(filename)
-    if commodity is None:
-        raise FileNotFoundError(
-            f"'{filename}' not found and no commodity mapping is known to regenerate it."
-        )
-
-    from person3_commodity_forecast import forecast_commodity_price
-
-    forecast_commodity_price(commodity).to_csv(path, index=False)
-    return path
-
 
 def forecast_mean(filename):
 
-    path = _ensure_forecast_file(filename)
-
-    df = pd.read_csv(path)
+    df = pd.read_csv(
+        ROOT / filename
+    )
 
     return float(
         df["price"].mean()
