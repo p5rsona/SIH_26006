@@ -11,10 +11,8 @@ import os
 
 random.seed(42)  # reproducible
 
-# Write next to this script (the project folder), which is where
-# load_to_mysql.py, person3_commodity_forecast.py and data_loader.py read
-# them from. (Was a hardcoded Linux sandbox path that doesn't exist here.)
-OUT = os.path.dirname(os.path.abspath(__file__))
+here = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(here, "seed_csv")
 os.makedirs(OUT, exist_ok=True)
 
 HORIZON_DAYS = 540  
@@ -116,7 +114,7 @@ def synth_series(n_days, start_val, target_end_val, vol, floor_val, seed_offset)
 freight_rows = []
 dates = [START_DATE + timedelta(days=d) for d in range(HORIZON_DAYS)]
 
-bdi_series = synth_series(HORIZON_DAYS, 1900, 3200, 45, 900, 1)
+bdi_series = synth_series(HORIZON_DAYS, 2100, 3500, 45, 900, 1)
 bci_series = synth_series(HORIZON_DAYS, 3200, 5600, 110, 1200, 2)
 bpi_series = synth_series(HORIZON_DAYS, 1500, 2430, 35, 700, 3)
 bsi_series = synth_series(HORIZON_DAYS, 1100, 1660, 25, 600, 4)
@@ -131,7 +129,7 @@ for i, d in enumerate(dates):
 # ------------------------------------------------------------
 # 6. COMMODITY PRICES
 # ------------------------------------------------------------
-coal_series = synth_series(HORIZON_DAYS, 115, 105, 2.5, 70, 11)
+coal_series = synth_series(HORIZON_DAYS, 115, 136, 2.5, 70, 11)
 wheat_series = synth_series(HORIZON_DAYS, 230, 225, 4.0, 150, 12)
 corn_series = synth_series(HORIZON_DAYS, 215, 218, 3.5, 140, 13)
 
@@ -191,7 +189,7 @@ for fid in range(1, N_FIXTURES + 1):
 # ------------------------------------------------------------
 def write_csv(filename, rows, fieldnames):
     path = os.path.join(OUT, filename)
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(rows)

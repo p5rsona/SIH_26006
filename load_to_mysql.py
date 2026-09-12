@@ -1,19 +1,14 @@
 """
-Loads schema.sql + Person 1's seed CSVs into a real MySQL instance.
-CSVs are read from seed_csv/ if that folder exists, otherwise from the
-project folder itself (where they currently live).
+Loads schema.sql + all CSVs in seed_csv/ into a real MySQL instance.
 
 Usage:
-    pip install mysql-connector-python
-    python load_to_mysql.py --host localhost --user root --password YOURPASS
-    (or set FR_DB_PASSWORD instead of passing --password; if neither is
-    given you'll be prompted)
+    pip install mysql-connector-python --break-system-packages
+    python3 load_to_mysql.py --host localhost --user root --password YOURPASS
 
 Adjust connection args below or pass as CLI flags.
 """
 import argparse
 import csv
-import getpass
 import os
 
 import mysql.connector
@@ -27,18 +22,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--user", default="root")
-    # never hardcode the password in the repo — env var or prompt instead
-    ap.add_argument("--password", default=os.getenv("FR_DB_PASSWORD"))
+    ap.add_argument("--password", default="homeline786@") 
     ap.add_argument("--port", default=3306, type=int)
     args = ap.parse_args()
 
     here = os.path.dirname(os.path.abspath(__file__))
-    csv_dir = os.path.join(here, "seed_csv")
-    if not os.path.isdir(csv_dir):
-        csv_dir = here
-
-    if args.password is None:
-        args.password = getpass.getpass(f"MySQL password for {args.user}@{args.host}: ")
 
     conn = mysql.connector.connect(
         host=args.host, user=args.user, password=args.password, port=args.port
@@ -51,7 +39,7 @@ def main():
     cur.execute("USE sih_shipping")
 
     print("Creating schema...")
-    with open(os.path.join(here, "schema.sql"), encoding="utf-8") as f:
+    with open(os.path.join(here, "schema.sql")) as f:
         for statement in f.read().split(";"):
             statement = statement.strip()
             if statement:
@@ -59,8 +47,8 @@ def main():
     conn.commit()
 
     for table in TABLE_ORDER:
-        path = os.path.join(csv_dir, f"{table}.csv")
-        with open(path, encoding="utf-8", newline="") as f:
+        path = os.path.join(here, "seed_csv", f"{table}.csv")
+        with open(path) as f:
             reader = csv.DictReader(f)
             rows = list(reader)
             if not rows:
