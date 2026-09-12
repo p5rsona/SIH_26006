@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 import pandas as pd
 from ortools.sat.python import cp_model
 
+import weather
 
 OUTPUT_COLUMNS = [
     "cargo",
@@ -34,28 +35,36 @@ def _overlap(a_start, a_end, b_start, b_end):
 def optimize(
     cargo_list: List[Dict[str, Any]],
     vessel_list: List[Dict[str, Any]],
-    constraints: Dict[str, Any]
+    constraints: Dict[str, Any],
+    weather_multiplier: float = 1.0,
 ) -> pd.DataFrame:
+    """
+    weather_multiplier: scales the expected weather/cyclone-delay cost
+    (see weather.py). 1.0 = climatological expectation. Person 5's Monte
+    Carlo simulation samples this per-scenario so realized weather outcomes
+    vary around that expectation; leave it at 1.0 for a single "expected
+    case" run.
+    """
 
     ports = constraints["ports"]
     budget = constraints.get("budget")
 
-    # Optional per-voyage economics from fleet_data.py:
-    #   {(cargo, vessel, port): {"freight_per_tonne": ..., "voyage_fixed": ...}}
-    # Freight depends on the route sailed and the repositioning (ballast) cost
-    # depends on where the vessel is open, so neither is really one number per
-    # vessel. When no matrix is given we fall back to the vessel's own
-    # freight_cost_per_tonne / fixed_cost, so existing callers are unaffected.
-    cost_matrix = constraints.get("cost_matrix") or {}
-
-    def voyage_costs(cargo, vessel, port):
-        entry = cost_matrix.get((cargo["cargo"], vessel["vessel"], port["port"]))
-        if entry is None:
-            return (
-                float(vessel["freight_cost_per_tonne"]),
-                float(vessel["fixed_cost"]),
+    # Pre-compute each (cargo, port) pair's expected weather-risk cost and
+    # whether that pair should be hard-blocked (cyclone risk too high for
+    # that laycan window at that port), once — not inside the per-vessel
+    # loops below.
+    weather_cost = {}
+    weather_blocked = {}
+    for cargo in cargo_list:
+        for port in ports:
+            key = (cargo["cargo"], port["port"])
+            weather_cost[key] = weather.weather_cost_adder(
+                port["port"], cargo["laycan_start"], cargo["laycan_end"],
+                weather_multiplier=weather_multiplier,
             )
-        return float(entry["freight_per_tonne"]), float(entry["voyage_fixed"])
+            weather_blocked[key] = weather.is_extreme_risk(
+                port["port"], cargo["laycan_start"], cargo["laycan_end"],
+            )
 
     model = cp_model.CpModel()
 
@@ -86,8 +95,10 @@ def optimize(
                 if vessel["draft"] > port["max_draft"]:
                     model.Add(x[key] == 0)
 
-                # Port size restriction (largest vessel the port can berth)
-                if port.get("max_dwt_capable") and vessel["dwt"] > port["max_dwt_capable"]:
+                # Weather / cyclone hard block — this laycan window's
+                # worst-day risk at this port is too high to route cargo
+                # there at all (see weather.CYCLONE_HARD_BLOCK_THRESHOLD)
+                if weather_blocked[(cargo["cargo"], port["port"])]:
                     model.Add(x[key] == 0)
 
                 # Laycan / availability restriction
@@ -214,15 +225,29 @@ def optimize(
                     port["port"]
                 ]
 
-                freight, fixed = voyage_costs(cargo, vessel, port)
+                freight_cost = int(
+                    round(
+                        float(
+                            vessel["freight_cost_per_tonne"]
+                        )
+                    )
+                )
 
-                freight_cost = int(round(freight))
-
-                fixed_cost = int(round(fixed))
+                fixed_cost = int(
+                    round(
+                        float(vessel["fixed_cost"])
+                    )
+                )
 
                 port_cost = int(
                     round(
                         float(port["port_cost"])
+                    )
+                )
+
+                weather_risk_cost = int(
+                    round(
+                        weather_cost[(cargo["cargo"], port["port"])]
                     )
                 )
 
@@ -231,6 +256,7 @@ def optimize(
                     * (procurement_price + freight_cost)
                     + fixed_cost
                     + port_cost
+                    + weather_risk_cost
                 )
 
                 total_cost_terms.append(
@@ -309,11 +335,21 @@ def optimize(
                         )
                     )
 
-                    freight, fixed = voyage_costs(cargo, vessel, port)
+                    freight = float(
+                        vessel["freight_cost_per_tonne"]
+                    )
+
+                    fixed = float(
+                        vessel["fixed_cost"]
+                    )
 
                     port_cost = float(
                         port["port_cost"]
                     )
+
+                    weather_risk_cost = weather_cost[
+                        (cargo["cargo"], port["port"])
+                    ]
 
                     breakdown = {
 
@@ -341,12 +377,19 @@ def optimize(
                                 2
                             ),
 
+                        "weather_risk_cost":
+                            round(
+                                weather_risk_cost,
+                                2
+                            ),
+
                         "total_cost":
                             round(
                                 quantity
                                 * (procurement + freight)
                                 + fixed
-                                + port_cost,
+                                + port_cost
+                                + weather_risk_cost,
                                 2
                             )
                     }

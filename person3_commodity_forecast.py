@@ -20,31 +20,35 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from config import COMMODITY_PRICES_REAL_CSV
-
 warnings.filterwarnings("ignore")
 
 ROOT = Path(__file__).resolve().parent
 COMMODITY_CSV = ROOT / "commodity_prices.csv"
-COMMODITY_CSV_REAL = Path(COMMODITY_PRICES_REAL_CSV)  # real monthly World Bank data
 COMMODITIES = ["coal_newcastle", "wheat_gulf", "corn_gulf"]
 
 # =====================================================================
 # STEP 1A — Pull real data from Person 1's MySQL database
 # =====================================================================
-USE_REAL_DB = False   # <-- set True once the DB is loaded (connection settings live in db.py / config.py)
+USE_REAL_DB = False   # <-- set True once Person 1's DB is loaded (credentials come from config.py / FR_DB_* env vars)
 
 
-def load_from_db() -> pd.DataFrame:
-    """Reads commodity_prices from MySQL or Supabase/Postgres (see db.py)."""
-    from db import read_sql
+def load_from_mysql() -> pd.DataFrame:
+    import mysql.connector
+    from config import DB_CONFIG
 
-    df = read_sql(
-        "SELECT price_date AS date, commodity, price_usd_per_tonne AS price "
-        "FROM commodity_prices ORDER BY commodity, price_date"
-    )
-    if df is None or df.empty:
-        raise RuntimeError("no rows returned from the database")
+    conn = mysql.connector.connect(**DB_CONFIG, connection_timeout=3)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT price_date AS date, commodity, price_usd_per_tonne AS price
+            FROM commodity_prices
+            ORDER BY commodity, price_date
+            """
+        )
+        df = pd.DataFrame(cur.fetchall(), columns=["date", "commodity", "price"])
+    finally:
+        conn.close()
     df["date"] = pd.to_datetime(df["date"])
     df["price"] = df["price"].astype(float)
     return df
@@ -76,33 +80,21 @@ def load_synthetic_data() -> pd.DataFrame:
 
 
 def load_raw_data() -> pd.DataFrame:
-    """Real World Bank prices -> database (if USE_REAL_DB) -> seed CSV -> synthetic.
+    """MySQL (if USE_REAL_DB) -> commodity_prices.csv -> synthetic."""
+    if USE_REAL_DB:
+        try:
+            return load_from_mysql()
+        except Exception as e:
+            print(f"MySQL load failed ({e}); falling back to CSV.")
 
-    `commodity_prices_real.csv` is written by fetch_real_data.py and holds real
-    *monthly* World Bank "Pink Sheet" benchmark prices; the seed CSV holds
-    synthetic *business-daily* prices. Everything downstream is frequency-aware,
-    so either works.
-    """
-    for path, label in ((COMMODITY_CSV_REAL, "real"), (COMMODITY_CSV, "synthetic")):
-        if label == "synthetic" and USE_REAL_DB:
-            try:
-                df = load_from_db()
-                df.attrs["source"] = "database"
-                return df
-            except Exception as e:
-                print(f"Database load failed ({e}); falling back to CSV.")
-        if path.exists():
-            df = pd.read_csv(path)
-            df = df.rename(columns={"price_date": "date", "price_usd_per_tonne": "price"})
-            df["date"] = pd.to_datetime(df["date"])
-            df = df[["date", "commodity", "price"]]
-            df.attrs["source"] = f"{path.name} ({label})"
-            return df
+    if COMMODITY_CSV.exists():
+        df = pd.read_csv(COMMODITY_CSV)
+        df = df.rename(columns={"price_date": "date", "price_usd_per_tonne": "price"})
+        df["date"] = pd.to_datetime(df["date"])
+        return df[["date", "commodity", "price"]]
 
-    print("No commodity price CSV found; using synthetic data.")
-    df = load_synthetic_data()
-    df.attrs["source"] = "synthetic (in-memory)"
-    return df
+    print("commodity_prices.csv not found; using synthetic data.")
+    return load_synthetic_data()
 
 
 # =====================================================================
@@ -140,43 +132,25 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
 @lru_cache(maxsize=1)
 def get_data() -> pd.DataFrame:
     """Loaded + cleaned + featurized data, cached for the whole process."""
-    raw = load_raw_data()
-    out = build_feature_frame(clean_data(raw))
-    out.attrs["source"] = raw.attrs.get("source", "unknown")
-    return out
+    return build_feature_frame(clean_data(load_raw_data()))
 
 
 # =====================================================================
 # STEP 4 — Baseline model: SARIMAX
 # =====================================================================
-def _series_frequency(series: pd.Series) -> tuple[str, int, float]:
-    """(pandas freq, seasonal period, steps per week) for the price series.
-
-    Synthetic seed data is business-daily; the real World Bank data is monthly,
-    so the model spec and the horizon have to follow the data.
-    """
-    gap_days = pd.Series(series.index).diff().dt.days.median()
-    if gap_days is None or np.isnan(gap_days) or gap_days <= 4:
-        return "B", 5, 5.0            # business daily, weekly seasonality
-    if gap_days <= 10:
-        return "W-MON", 52, 1.0       # weekly, annual seasonality
-    return "MS", 12, 1 / 4.345        # monthly, annual seasonality
-
-
 def sarimax_forecast(series: pd.Series, horizon_weeks: int):
     from statsmodels.tsa.statespace.sarimax import SARIMAX
 
-    freq, seasonal_period, steps_per_week = _series_frequency(series)
-    series = series.asfreq(freq).interpolate()
+    # Prices are business-daily. Give the index an explicit 'B' frequency
+    # (filling any missing days) so the forecast comes back with real dates
+    # instead of integer positions.
+    series = series.asfreq("B").interpolate()
 
-    # A seasonal term needs at least two full cycles of history
-    seasonal_order = (1, 1, 1, seasonal_period) if len(series) >= 2 * seasonal_period else (0, 0, 0, 0)
-
-    steps = max(int(round(horizon_weeks * steps_per_week)), 1)
-    model = SARIMAX(series, order=(1, 1, 1), seasonal_order=seasonal_order,
+    horizon_days = horizon_weeks * 5
+    model = SARIMAX(series, order=(1, 1, 1), seasonal_order=(1, 1, 1, 5),
                     enforce_stationarity=False, enforce_invertibility=False)
     fit = model.fit(disp=False)
-    fc = fit.get_forecast(steps=steps)
+    fc = fit.get_forecast(steps=horizon_days)
     return fc.predicted_mean, fc.conf_int(alpha=0.05)
 
 
@@ -233,7 +207,6 @@ def forecast_commodity_price(commodity: str, horizon_weeks: int = 4) -> pd.DataF
 def main():
     print("STEP 1-3: Loading, cleaning and featurizing commodity data...")
     df = get_data()
-    print(f"source: {df.attrs.get('source', 'unknown')}")
     print(df.tail(3))
     print(f"{len(df)} rows, commodities: {df['commodity'].unique()}\n")
 

@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from config import MONSOON_MONTHS
+from weather import CYCLONE_MONTHLY_WEIGHT
 
 
 def add_lag_features(df: pd.DataFrame, col: str = "rate", lags=(1, 2, 4, 8, 12)) -> pd.DataFrame:
@@ -54,6 +55,12 @@ def add_seasonality_flags(df: pd.DataFrame, date_col: str = "date") -> pd.DataFr
 
     df["month"] = dt.dt.month
     df["is_monsoon"] = df["month"].isin(MONSOON_MONTHS).astype(int)
+
+    # Bay of Bengal cyclone-season weight (0-1, IMD climatology shape — see
+    # weather.py). Route-level, not port-level: the freight indices (BDI/
+    # BCI/BPI) reflect the whole east-coast India corridor, so we use the
+    # basin-wide seasonal shape rather than any one port's exposure.
+    df["cyclone_season_weight"] = df["month"].map(CYCLONE_MONTHLY_WEIGHT).fillna(0.05)
     return df
 
 

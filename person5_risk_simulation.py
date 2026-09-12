@@ -4,17 +4,25 @@ person5_risk_simulation.py — Person 5: Risk Simulation & Baseline Comparison
 Public contract (per the team doc):
 
     simulate_scenarios(n_scenarios) -> cost_distribution_df
-        columns: scenario_id, optimized_cost, baseline_cost, savings_pct
+        columns: scenario_id, optimized_cost, baseline_cost, savings_pct,
+                 weather_multiplier
 
 This module:
   1. Pulls uncertainty from Person 2's freight forecast (forecast.py) and
      Person 3's commodity forecasts (forecast_<commodity>.csv files).
   2. Monte Carlo-samples cargo procurement prices and vessel freight costs
-     around those forecasts.
-  3. Re-runs Person 4's optimizer (optimizer.py) on every sampled scenario.
+     around those forecasts, plus a shared weather/cyclone-severity
+     multiplier for the scenario (weather.py) — see STEP 2 below.
+  3. Re-runs Person 4's optimizer (optimizer.py) on every sampled scenario,
+     which itself already prices in the *expected* weather-risk cost per
+     port/laycan window and hard-blocks ports with an active cyclone-level
+     risk; the per-scenario multiplier scales that expectation up or down
+     to reflect that a real cyclone season can turn out worse or better
+     than climatology suggests.
   4. Also runs a naive "first feasible option, no optimization" baseline on
-     the same scenarios, so we can report a genuine cost-savings distribution
-     instead of a single point estimate.
+     the same scenarios (including the same weather cost/hard-block), so we
+     can report a genuine cost-savings distribution instead of a single
+     point estimate.
 
 ASSUMPTION TO FLAG WITH THE TEAM: optimizer.py currently takes a static
 `freight_cost_per_tonne` per vessel — there's no existing function that
@@ -37,6 +45,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+import weather
 from forecast import forecast_freight_rate
 from optimizer import optimize
 from sample_data import _ensure_forecast_file, get_sample_data
@@ -98,8 +107,9 @@ def _sample_scenario(
     commodity_dists: Dict[str, Tuple[float, float]],
     freight_rel_sigma: float,
     rng: np.random.Generator,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Returns perturbed (cargo_list, vessel_list) for one scenario."""
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], float]:
+    """Returns perturbed (cargo_list, vessel_list, weather_multiplier) for
+    one scenario."""
 
     scenario_cargo = copy.deepcopy(cargo_list)
     scenario_vessels = copy.deepcopy(vessel_list)
@@ -117,7 +127,14 @@ def _sample_scenario(
         base = vessel["freight_cost_per_tonne"]
         vessel["freight_cost_per_tonne"] = max(base * (1 + freight_shock), 1.0)
 
-    return scenario_cargo, scenario_vessels
+    # How much worse/better than the climatological expectation did weather
+    # actually turn out this scenario (see weather.sample_weather_multiplier).
+    # Shared across cargo/ports for the same reason freight_shock is shared:
+    # a given cyclone season is either mild or bad for the whole basin, not
+    # independently per cargo.
+    weather_multiplier = weather.sample_weather_multiplier(rng)
+
+    return scenario_cargo, scenario_vessels, weather_multiplier
 
 
 # =====================================================================
@@ -130,17 +147,27 @@ def _overlaps(a_start, a_end, b_start, b_end) -> bool:
     return max(a_start, b_start) <= min(a_end, b_end)
 
 
-def _cost_breakdown(cargo, vessel, port) -> float:
+def _cost_breakdown(cargo, vessel, port, weather_multiplier: float = 1.0) -> float:
     qty = cargo["quantity"]
     procurement = cargo.get("procurement_price_per_tonne", 0)
     freight = vessel["freight_cost_per_tonne"]
-    return qty * (procurement + freight) + vessel["fixed_cost"] + port["port_cost"]
+    weather_risk_cost = weather.weather_cost_adder(
+        port["port"], cargo["laycan_start"], cargo["laycan_end"],
+        weather_multiplier=weather_multiplier,
+    )
+    return (
+        qty * (procurement + freight)
+        + vessel["fixed_cost"]
+        + port["port_cost"]
+        + weather_risk_cost
+    )
 
 
 def greedy_baseline(
     cargo_list: List[Dict[str, Any]],
     vessel_list: List[Dict[str, Any]],
     constraints: Dict[str, Any],
+    weather_multiplier: float = 1.0,
 ) -> Optional[float]:
     """"Always take the first workable option" strategy — no cost
     minimization, just the first vessel/port that satisfies draft, laycan
@@ -179,8 +206,12 @@ def greedy_baseline(
                     continue
                 if cargo.get("allowed_ports") and port["port"] not in cargo["allowed_ports"]:
                     continue
+                # A port shut by an active cyclone is closed regardless of
+                # strategy — the naive baseline doesn't get to ignore that.
+                if weather.is_extreme_risk(port["port"], cargo["laycan_start"], cargo["laycan_end"]):
+                    continue
 
-                total_cost += _cost_breakdown(cargo, vessel, port)
+                total_cost += _cost_breakdown(cargo, vessel, port, weather_multiplier)
                 remaining_dwt[vessel["vessel"]] -= cargo["quantity"]
                 vessel_bookings[vessel["vessel"]].append((cargo["laycan_start"], cargo["laycan_end"]))
                 placed = True
@@ -230,19 +261,25 @@ def simulate_scenarios(
     rows = []
 
     for scenario_id in range(n_scenarios):
-        scenario_cargo, scenario_vessels = _sample_scenario(
+        scenario_cargo, scenario_vessels, weather_multiplier = _sample_scenario(
             cargo_list, vessel_list, commodity_dists, freight_rel_sigma, rng
         )
 
         try:
-            result = optimize(scenario_cargo, scenario_vessels, constraints)
+            result = optimize(
+                scenario_cargo, scenario_vessels, constraints,
+                weather_multiplier=weather_multiplier,
+            )
             optimized_cost = sum(
                 json.loads(row)["total_cost"] for row in result["cost_breakdown"]
             )
         except RuntimeError:
             optimized_cost = np.nan  # optimizer found no feasible plan
 
-        baseline_cost = greedy_baseline(scenario_cargo, scenario_vessels, constraints)
+        baseline_cost = greedy_baseline(
+            scenario_cargo, scenario_vessels, constraints,
+            weather_multiplier=weather_multiplier,
+        )
         if baseline_cost is None:
             baseline_cost = np.nan
 
@@ -257,6 +294,7 @@ def simulate_scenarios(
             "optimized_cost": optimized_cost,
             "baseline_cost": baseline_cost,
             "savings_pct": savings_pct,
+            "weather_multiplier": weather_multiplier,
         })
 
     return pd.DataFrame(rows)
@@ -274,6 +312,8 @@ def summarize(cost_distribution_df: pd.DataFrame) -> Dict[str, float]:
         "p95_savings_pct": df["savings_pct"].quantile(0.95),
         "prob_optimized_beats_baseline": (df["optimized_cost"] < df["baseline_cost"]).mean(),
         "worst_case_optimized_cost_p95": df["optimized_cost"].quantile(0.95),
+        "mean_weather_multiplier": df["weather_multiplier"].mean(),
+        "prob_severe_weather_scenario": (df["weather_multiplier"] > 1.5).mean(),
     }
 
 

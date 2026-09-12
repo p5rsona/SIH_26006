@@ -20,10 +20,6 @@ silently showing fake numbers as if they were real.
 """
 
 import json
-import os
-import urllib.error
-import urllib.parse
-import urllib.request
 from datetime import datetime
 
 import numpy as np
@@ -34,6 +30,8 @@ import streamlit as st
 
 from config import SUPPORTED_ROUTES
 from pathlib import Path
+
+import weather
 
 ROOT = Path(__file__).resolve().parent
 
@@ -64,8 +62,7 @@ st.set_page_config(
 )
 
 st.title("🚢 Freight Rate & Chartering Optimization Dashboard")
-st.caption("SIH Prototype — Overview | Forecast | Optimizer | Risk | ROI Summary")
-
+st.caption("SIH Prototype — Overview | Forecast | Optimizer | Weather & Cyclone Risk | Risk | ROI Summary")
 
 
 # ===========================================================================
@@ -159,138 +156,56 @@ def optimizer_costs(plan_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ===========================================================================
-# API CLIENT
-# ===========================================================================
-# The dashboard prefers the FastAPI service (api.py). If it isn't running it
-# falls back to importing the teammate modules in-process, so the demo works
-# either way. Point it elsewhere with the API_URL environment variable.
-
-API_URL = os.getenv("API_URL", "http://localhost:8000").rstrip("/")
-
-
-def _api(path: str, params: dict | None = None, payload: dict | None = None, timeout: int = 900):
-    """Call the API. Returns parsed JSON, or None if the API isn't reachable
-    (caller then falls back to in-process imports). Raises RuntimeError if the
-    API *was* reached but rejected the request — that's a real pipeline error."""
-    url = API_URL + path
-    if params:
-        url += "?" + urllib.parse.urlencode(params)
-    data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"},
-        method="POST" if payload is not None else "GET",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as e:
-        try:
-            detail = json.loads(e.read()).get("detail", str(e))
-        except Exception:
-            detail = str(e)
-        raise RuntimeError(detail)
-    except Exception:
-        return None  # service not running / not reachable
-
-
-@st.cache_data(show_spinner=False, ttl=30)
-def api_available() -> bool:
-    return _api("/health") is not None
-
-
-def _rows_to_df(rows) -> pd.DataFrame:
-    df = pd.DataFrame(rows)
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"])
-    return df
-with st.sidebar:
-    st.subheader("Backend")
-    if api_available():
-        st.success(f"API connected\n\n{API_URL}")
-        st.caption(f"Docs: {API_URL}/docs")
-    else:
-        st.info("API not running — using in-process modules.\n\nStart it with:\n`python -m uvicorn api:app --port 8000`")
-
-    try:
-        from db import status as db_status
-        st.caption(f"Data: {db_status()}")
-    except Exception:
-        pass
-
-
-# ===========================================================================
 # LIVE PIPELINE WIRING
 # ===========================================================================
 # Each live_* function tries the real teammate module and returns
-# (result_df, error_message, source). error_message is None on success and
-# source says whether it came from the API or from an in-process import.
-# Results are cached so re-rendering the dashboard (Streamlit reruns the whole
-# script on every widget interaction) doesn't repeat slow model fits/solver runs.
+# (result_df, error_message). error_message is None on success. Results are
+# cached so re-rendering the dashboard (Streamlit reruns the whole script on
+# every widget interaction) doesn't repeat slow model fits / solver runs.
 
 @st.cache_data(show_spinner=False)
 def live_forecast_freight_rate(route: str, horizon_weeks: int):
     try:
-        rows = _api("/forecast/freight", {"route": route, "weeks": horizon_weeks})
-        if rows is not None:
-            return _rows_to_df(rows), None, "API"
         from forecast import forecast_freight_rate
-        return forecast_freight_rate(route, horizon_weeks), None, "in-process"
+        return forecast_freight_rate(route, horizon_weeks), None
     except Exception as e:
-        return None, str(e), "API" if api_available() else "in-process"
+        return None, str(e)
 
 
 @st.cache_data(show_spinner=False)
 def live_forecast_commodity_price(commodity: str, horizon_weeks: int):
     try:
-        rows = _api("/forecast/commodity", {"commodity": commodity, "weeks": horizon_weeks})
-        if rows is not None:
-            return _rows_to_df(rows), None, "API"
         from person3_commodity_forecast import forecast_commodity_price
-        return forecast_commodity_price(commodity, horizon_weeks), None, "in-process"
+        return forecast_commodity_price(commodity, horizon_weeks), None
     except Exception as e:
-        return None, str(e), "API" if api_available() else "in-process"
+        return None, str(e)
 
 
 @st.cache_data(show_spinner=False)
-def live_optimize(budget: float, use_real_fleet: bool = False):
+def live_optimize(budget: float):
     try:
-        result = _api("/optimize", payload={"budget": budget, "use_real_fleet": use_real_fleet})
-        if result is not None:
-            plan = pd.DataFrame(result["plan"])
-            # the API returns cost_breakdown as an object; the team contract
-            # (and the charts below) use it as a JSON string
-            plan["cost_breakdown"] = plan["cost_breakdown"].apply(json.dumps)
-            return plan, None, "API"
-
         from optimizer import optimize
-        if use_real_fleet:
-            from fleet_data import get_fleet_inputs
-            cargo_list, vessel_list, constraints = get_fleet_inputs(budget=budget)
-        else:
-            from sample_data import get_sample_data
-            cargo_list, vessel_list, constraints = get_sample_data()
-            constraints = {**constraints, "budget": budget}
-        return optimize(cargo_list, vessel_list, constraints), None, "in-process"
+        from sample_data import get_sample_data
+        cargo_list, vessel_list, constraints = get_sample_data()
+        constraints = {**constraints, "budget": budget}
+        return optimize(cargo_list, vessel_list, constraints), None
     except Exception as e:
-        return None, str(e), "API" if api_available() else "in-process"
+        return None, str(e)
 
 
 @st.cache_data(show_spinner=False)
 def live_simulate_scenarios(n_scenarios: int):
     try:
-        result = _api("/simulate", payload={"n_scenarios": n_scenarios})
-        if result is not None:
-            return pd.DataFrame(result["scenarios"]), None, "API"
         from person5_risk_simulation import simulate_scenarios
-        return simulate_scenarios(n_scenarios=n_scenarios), None, "in-process"
+        return simulate_scenarios(n_scenarios=n_scenarios), None
     except Exception as e:
-        return None, str(e), "API" if api_available() else "in-process"
+        return None, str(e)
 
 
-def use_live_or_mock(live_result, error, mock_df, label: str, source: str = "") -> pd.DataFrame:
+def use_live_or_mock(live_result, error, mock_df, label: str) -> pd.DataFrame:
     """Shows a one-line status caption and returns whichever data is usable."""
     if live_result is not None and not live_result.empty:
-        st.caption(f"✅ Live: {label}" + (f" (via {source})" if source else ""))
+        st.caption(f"✅ Live: {label}")
         return live_result
     st.caption(f"⚠️ Demo data for {label} — live pipeline unavailable ({error}).")
     return mock_df
@@ -299,8 +214,8 @@ def use_live_or_mock(live_result, error, mock_df, label: str, source: str = "") 
 # ===========================================================================
 # TABS
 # ===========================================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["📊 Overview", "📈 Forecast", "⚙️ Optimizer", "🎲 Risk", "💰 ROI Summary"]
+tab1, tab2, tab3, tab_weather, tab4, tab5 = st.tabs(
+    ["📊 Overview", "📈 Forecast", "⚙️ Optimizer", "🌀 Weather & Cyclone Risk", "🎲 Risk", "💰 ROI Summary"]
 )
 
 with tab1:
@@ -350,16 +265,16 @@ with tab2:
         )
 
     with st.spinner("Fetching freight & commodity forecasts..."):
-        live_freight, freight_err, freight_src = live_forecast_freight_rate(route, horizon)
-        live_price, price_err, price_src = live_forecast_commodity_price(commodity, horizon)
+        live_freight, freight_err = live_forecast_freight_rate(route, horizon)
+        live_price, price_err = live_forecast_commodity_price(commodity, horizon)
 
     freight_df = use_live_or_mock(
         live_freight, freight_err, mock_forecast_freight_rate(route, horizon),
-        f"{route} freight forecast", freight_src,
+        f"{route} freight forecast",
     )
     price_df = use_live_or_mock(
         live_price, price_err, mock_forecast_commodity_price(commodity, origin, horizon),
-        f"{commodity} price forecast", price_src,
+        f"{commodity} price forecast",
     )
 
     fig1 = go.Figure()
@@ -423,26 +338,15 @@ with tab2:
 with tab3:
     st.subheader("Cargo → Vessel → Port Optimization Plan")
 
-    col_l, col_r = st.columns(2)
-    with col_l:
-        budget = st.number_input("Budget (USD)", value=_default_budget(), step=500_000)
-    with col_r:
-        fleet_choice = st.radio(
-            "Fleet",
-            ["Real fleet (from database)", "Sample (3 vessels)"],
-            help="Real fleet: every vessel in Person 1's `vessels` table that is open "
-                 "during the cargo laycan window, with freight priced from the forecast "
-                 "index and the fixtures calibration (fleet_data.py).",
-        )
-    use_real_fleet = fleet_choice.startswith("Real")
+    budget = st.number_input("Budget (USD)", value=_default_budget(), step=500_000)
 
     with st.spinner("Solving cargo → vessel → port assignment..."):
-        live_plan, plan_err, plan_src = live_optimize(budget, use_real_fleet)
+        live_plan, plan_err = live_optimize(budget)
 
     plan_df = use_live_or_mock(
         live_plan, plan_err,
         mock_optimize(cargo_list=[], vessel_list=[], constraints={"budget": budget}),
-        "optimizer plan", plan_src,
+        "optimizer plan",
     )
     plan_df = optimizer_costs(plan_df)
 
@@ -458,6 +362,69 @@ with tab3:
     st.plotly_chart(fig3, width="stretch")
 
     st.metric("Total Optimized Cost", f"${plan_df['total_cost'].sum():,.0f}")
+    if "weather_risk_cost" in plan_df.columns:
+        st.caption(
+            f"Of which ${plan_df['weather_risk_cost'].sum():,.0f} is expected "
+            "weather/cyclone-delay risk cost baked into the port choice."
+        )
+
+with tab_weather:
+    st.subheader("🌀 Weather & Cyclone Risk")
+    st.write(
+        "Bay of Bengal cyclone-season climatology, folded into the optimizer "
+        "as an expected-cost adder per (cargo, port) laycan window, a hard "
+        "block above a severe-risk threshold, and a seasonal regressor for "
+        "Person 2/3's forecasting models. See `weather.py` for the full "
+        "real-vs-synthetic breakdown of what's calibrated to actual IMD "
+        "climatology vs a planning-stage assumption."
+    )
+
+    climatology = weather.monthly_climatology_table()
+    month_order = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    fig_weather = px.line(
+        climatology,
+        x="month_name",
+        y="risk_score",
+        color="port",
+        category_orders={"month_name": month_order},
+        markers=True,
+        title="Cyclone Risk Score by Port and Month (climatology)",
+        labels={"month_name": "Month", "risk_score": "Risk score (0-1)"},
+    )
+    fig_weather.add_hline(
+        y=1.0, line_dash="dot", line_color="red",
+        annotation_text="cyclone hard-block ceiling", annotation_position="top left",
+    )
+    st.plotly_chart(fig_weather, width="stretch")
+
+    st.markdown("---")
+    st.subheader("Risk for a specific cargo laycan window")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        wx_port = st.selectbox("Port", list(weather.PORT_CYCLONE_EXPOSURE.keys()))
+    with col2:
+        wx_start = st.date_input("Laycan start", value=datetime(2026, 10, 20))
+    with col3:
+        wx_end = st.date_input("Laycan end", value=datetime(2026, 11, 5))
+
+    wx_risk = weather.window_risk(wx_port, wx_start, wx_end)
+    wx_delay = weather.expected_delay_days(wx_port, wx_start, wx_end)
+    wx_cost = weather.weather_cost_adder(wx_port, wx_start, wx_end)
+    wx_blocked = weather.is_extreme_risk(wx_port, wx_start, wx_end)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Worst-day risk score", f"{wx_risk:.2f}")
+    c2.metric("Expected delay", f"{wx_delay:.1f} days")
+    c3.metric("Weather-risk cost", f"${wx_cost:,.0f}")
+    c4.metric("Hard-blocked?", "🚫 Yes" if wx_blocked else "✅ No")
+
+    if wx_blocked:
+        st.error(
+            f"{wx_port} in this laycan window is above the cyclone hard-block "
+            "threshold — the optimizer will not route cargo there for these dates."
+        )
 
 with tab4:
     st.subheader("Monte Carlo Risk Simulation")
@@ -465,10 +432,10 @@ with tab4:
     n_scenarios = st.slider("Number of scenarios", 100, 5000, 1000, step=100)
 
     with st.spinner(f"Running {n_scenarios:,} Monte Carlo scenarios..."):
-        live_sim, sim_err, sim_src = live_simulate_scenarios(n_scenarios)
+        live_sim, sim_err = live_simulate_scenarios(n_scenarios)
 
     sim_df = use_live_or_mock(
-        live_sim, sim_err, mock_simulate_scenarios(n_scenarios), "Monte Carlo risk simulation", sim_src,
+        live_sim, sim_err, mock_simulate_scenarios(n_scenarios), "Monte Carlo risk simulation",
     ).dropna()
 
     fig4 = go.Figure()
@@ -503,10 +470,10 @@ with tab5:
     st.subheader("💰 ROI Summary — The Headline Pitch")
 
     with st.spinner("Running Monte Carlo scenarios for the ROI summary..."):
-        live_sim, sim_err, sim_src = live_simulate_scenarios(1000)
+        live_sim, sim_err = live_simulate_scenarios(1000)
 
     sim_df = use_live_or_mock(
-        live_sim, sim_err, mock_simulate_scenarios(1000), "Monte Carlo risk simulation", sim_src,
+        live_sim, sim_err, mock_simulate_scenarios(1000), "Monte Carlo risk simulation",
     ).dropna()
     avg_savings_pct = sim_df["savings_pct"].mean()
     avg_savings_usd = (sim_df["baseline_cost"] - sim_df["optimized_cost"]).mean()
