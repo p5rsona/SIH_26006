@@ -42,6 +42,69 @@ class ForecastResult:
     upper: np.ndarray
 
 
+class NaiveModel:
+    """
+    Random-walk benchmark: every future week is forecast as the last observed
+    value. No parameters, no fitting.
+
+    This exists to be honest about what the fancier models are worth. Freight
+    rates are close to a random walk over a multi-week horizon, so persistence
+    is a genuinely hard baseline — on the USDA Gulf ocean series it is
+    competitive with SARIMAX at an 8-week horizon. A forecasting claim that
+    hasn't been checked against it isn't a claim about anything.
+
+    The interval is the textbook random-walk one: the standard deviation of
+    week-to-week changes, widened by the square root of the horizon, which is
+    how uncertainty accumulates when each step is an independent shock.
+    """
+
+    def __init__(self):
+        self._last_value = None
+        self._step_sigma = None
+        self._last_date = None
+        self._freq = None
+
+    def fit(self, df: pd.DataFrame, target_col: str = "rate", date_col: str = "date"):
+        # resampled the same way SarimaxModel does, so the two models are
+        # scored on identical observations in a backtest
+        series = (
+            df.assign(**{date_col: pd.to_datetime(df[date_col])})
+            .set_index(date_col)[target_col]
+            .resample("W-MON").mean()
+            .interpolate()
+            .dropna()
+        )
+        if series.empty:
+            raise ValueError("No observations to fit on.")
+
+        self._last_value = float(series.iloc[-1])
+        # std of first differences; fall back to 0 for a single-point series
+        self._step_sigma = float(series.diff().dropna().std() or 0.0)
+        self._last_date = series.index[-1]
+        self._freq = series.index.freq
+        return self
+
+    def predict(self, horizon_weeks: int, alpha: float = 0.05) -> ForecastResult:
+        if self._last_value is None:
+            raise RuntimeError("Call .fit() before .predict()")
+
+        from scipy.stats import norm
+
+        z = norm.ppf(1 - alpha / 2)
+        point = np.repeat(self._last_value, horizon_weeks)
+        margin = z * self._step_sigma * np.sqrt(np.arange(1, horizon_weeks + 1))
+
+        dates = pd.date_range(
+            start=self._last_date + self._freq, periods=horizon_weeks, freq=self._freq
+        )
+        return ForecastResult(
+            dates=dates,
+            point=point,
+            lower=point - margin,
+            upper=point + margin,
+        )
+
+
 class SarimaxModel:
     """
     SARIMAX baseline for weekly data with annual seasonality.

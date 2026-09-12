@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from models import SarimaxModel, XgbForecaster
+from models import NaiveModel, SarimaxModel, XgbForecaster
 
 
 def mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -88,13 +88,27 @@ def compare_models(
     n_splits: int = 5,
 ) -> pd.DataFrame:
     """
-    Runs the backtest for both SARIMAX and XGBoost and returns a summary
-    table (mean MAPE / RMSE per model) — this is the table to put in the
-    slide deck.
+    Runs the backtest for the naive benchmark, SARIMAX and XGBoost, and
+    returns a summary table (mean MAPE / RMSE per model) — this is the table
+    to put in the slide deck.
+
+    Read it against the naive row, not in isolation. On freight rates at a
+    multi-week horizon, persistence is hard to beat; if SARIMAX only matches
+    it on MAPE, the argument for SARIMAX is its calibrated confidence
+    interval — which the Monte Carlo layer needs and a point forecast cannot
+    provide — not point accuracy.
     """
     summaries = []
 
-    for name, cls in [("SARIMAX", SarimaxModel), ("XGBoost", XgbForecaster)]:
+    # Naive first: it is the benchmark the other two have to justify
+    # themselves against, and reading the table top-down should make that
+    # obvious. A model that does not beat persistence is not adding accuracy,
+    # whatever else it adds.
+    for name, cls in [
+        ("Naive (random walk)", NaiveModel),
+        ("SARIMAX", SarimaxModel),
+        ("XGBoost", XgbForecaster),
+    ]:
         try:
             fold_results = backtest_model(
                 cls, df, target_col=target_col, date_col=date_col,

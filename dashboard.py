@@ -320,7 +320,12 @@ with tab1:
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Active Routes", len(SUPPORTED_ROUTES))
     col2.metric("Vessels Tracked", _csv_row_count("vessels.csv"))
-    col3.metric("Avg Forecasted Savings", "—")
+    # Filled in by the Risk tab below, which is where the Monte Carlo actually
+    # runs. Streamlit executes every tab's body on each rerun, so that result
+    # is available in the same pass — no second simulation needed. Shows "—"
+    # only if the simulation fails outright.
+    savings_metric = col3.empty()
+    savings_metric.metric("Avg Forecasted Savings", "—")
     col4.metric("Ports Covered", _csv_row_count("ports.csv"))
 
     st.markdown("---")
@@ -540,6 +545,12 @@ with tab4:
         live_sim, sim_err, mock_simulate_scenarios(n_scenarios), "Monte Carlo risk simulation", sim_src,
     ).dropna()
 
+    # Backfill the Overview tab's headline metric now that the number exists.
+    if "savings_pct" in sim_df.columns and not sim_df.empty:
+        savings_metric.metric(
+            "Avg Forecasted Savings", f"{sim_df['savings_pct'].mean():.1f}%"
+        )
+
     fig4 = go.Figure()
     fig4.add_trace(
         go.Histogram(
@@ -571,11 +582,14 @@ with tab4:
 with tab5:
     st.subheader("💰 ROI Summary — The Headline Pitch")
 
+    # Uses the Risk tab's scenario count rather than a hardcoded 1000, so the
+    # "scenarios simulated" figure below actually tracks the slider — and so
+    # this reuses the cached run instead of triggering a second Monte Carlo.
     with st.spinner("Running Monte Carlo scenarios for the ROI summary..."):
-        live_sim, sim_err, sim_src = live_simulate_scenarios(1000)
+        live_sim, sim_err, sim_src = live_simulate_scenarios(n_scenarios)
 
     sim_df = use_live_or_mock(
-        live_sim, sim_err, mock_simulate_scenarios(1000), "Monte Carlo risk simulation", sim_src,
+        live_sim, sim_err, mock_simulate_scenarios(n_scenarios), "Monte Carlo risk simulation", sim_src,
     ).dropna()
     avg_savings_pct = sim_df["savings_pct"].mean()
     avg_savings_usd = (sim_df["baseline_cost"] - sim_df["optimized_cost"]).mean()

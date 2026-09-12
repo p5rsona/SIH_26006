@@ -72,7 +72,10 @@ CREATE TABLE vessels (
 CREATE TABLE freight_rates_history (
     rate_id     INT AUTO_INCREMENT PRIMARY KEY,
     rate_date   DATE NOT NULL,
-    index_name  VARCHAR(10) NOT NULL,   -- BDI, BCI, BPI, BSI
+    -- Long enough for the real USDA series names (USDA_GULF_VESSEL,
+    -- USDA_PNW_VESSEL, USDA_BARGE) as well as the Baltic ones. VARCHAR(10)
+    -- fit only BDI/BCI/BPI/BSI and truncated the published data on load.
+    index_name  VARCHAR(30) NOT NULL,   -- BDI, BCI, BPI, BSI, USDA_*
     index_value DECIMAL(10,2) NOT NULL,
     UNIQUE KEY uq_date_index (rate_date, index_name)
 );

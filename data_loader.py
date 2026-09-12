@@ -35,6 +35,12 @@ def _to_weekly(df: pd.DataFrame) -> pd.DataFrame | None:
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
     df["rate"] = pd.to_numeric(df["rate"], errors="coerce")
+
+    # USDA publishes 0 for weeks with no reported movement on a route. A $0
+    # ocean freight rate is a missing observation, not a market collapse —
+    # averaged into its week it reads as a 100% crash and inflates backtest
+    # error. Mark them missing so the interpolation below fills them.
+    df.loc[df["rate"] <= 0, "rate"] = np.nan
     weekly = (
         df.set_index("date")["rate"]
         .resample("W-MON")

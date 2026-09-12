@@ -43,6 +43,20 @@ PK_COLUMNS = {
 
 SCHEMA_FILE = "schema_postgres.sql"
 
+# Real published data written by fetch_real_data.py, merged into the same
+# tables as the synthetic seed rows: {table: (real csv, unique key)}.
+#
+# USDA freight indices use their own index_name values, so they sit alongside
+# the synthetic BDI/BCI/BPI/BSI rows without clashing. Pink Sheet commodity
+# prices DO overlap the generated ones on (price_date, commodity) — the real
+# row wins, since it is concatenated second and de-duplication keeps the last.
+# Both keys match the UNIQUE constraints in schema_postgres.sql, so this also
+# prevents the load failing on a constraint violation.
+REAL_CSV = {
+    "freight_rates_history": ("freight_rates_real.csv", ["rate_date", "index_name"]),
+    "commodity_prices": ("commodity_prices_real.csv", ["price_date", "commodity"]),
+}
+
 
 def _csv_dir() -> Path:
     seed = ROOT / "seed_csv"
@@ -94,6 +108,24 @@ def main() -> int:
             print(f"  !! {path.name} not found — skipped")
             continue
         df = pd.read_csv(path)
+
+        real_spec = REAL_CSV.get(table)
+        if real_spec:
+            real_name, unique_key = real_spec
+            real_path = csv_dir / real_name
+            if real_path.exists():
+                real_df = pd.read_csv(real_path)
+                combined = len(df) + len(real_df)
+                # real second, keep="last" -> published data supersedes generated
+                df = pd.concat([df, real_df], ignore_index=True)
+                df = df.drop_duplicates(subset=unique_key, keep="last").reset_index(drop=True)
+                print(
+                    f"  + {real_name}: {len(real_df)} real rows"
+                    + (f", {combined - len(df)} synthetic superseded" if combined != len(df) else "")
+                )
+            else:
+                print(f"  !! {real_name} not found — synthetic data only. Run fetch_real_data.py")
+
         df.to_sql(table, engine, if_exists="append", index=False, chunksize=1000)
         print(f"  loaded {len(df):>5} rows -> {table}")
 

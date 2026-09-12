@@ -1,9 +1,10 @@
 """
 weather.py — Weather & Cyclone Risk Factor
 
-Adds a weather/cyclone risk signal for the four east-coast India destination
-ports and plugs into the rest of the pipeline the same way Person 1-5's
-modules plug into each other:
+Adds a weather/cyclone risk signal for the east-coast India destination
+ports. The port list comes from the database (see known_ports()), not from
+a hardcoded list, so it always matches Person 1's data. It plugs into the
+rest of the pipeline the same way Person 1-5's modules plug into each other:
 
   - features.py                 -> extra seasonal regressor for Person 2/3's
                                     forecasting models (`cyclone_season_weight`,
@@ -77,11 +78,43 @@ CYCLONE_MONTHLY_WEIGHT = {
 # per-port score.
 PORT_CYCLONE_EXPOSURE = {
     "Paradip": 1.00,          # Odisha coast — historically the most landfalls
+    "Dhamra": 1.00,           # Bhadrak, Odisha — same high-landfall stretch as Paradip
+    "Sagar-Sandheads": 0.95,  # Hooghly mouth, West Bengal — Amphan/Yaas track region
+    "Gopalpur": 0.95,         # South Odisha — Phailin (2013) made landfall here
     "Visakhapatnam": 0.90,    # North Andhra Pradesh — also high exposure
+    "Gangavaram": 0.90,       # Adjacent to Visakhapatnam, same exposure stretch
     "Kakinada": 0.85,         # Godavari delta — frequent landfalls, shallower approach
+    "Haldia": 0.85,           # Upriver on the Hooghly — sheltered, but WB coast still exposed
     "Krishnapatnam": 0.65,    # Southern AP — statistically fewer direct hits
 }
-DEFAULT_PORT_EXPOSURE = 0.75  # used for any port not in the table above
+DEFAULT_PORT_EXPOSURE = 0.75  # placeholder for any port not in the table above
+
+
+def known_ports() -> list:
+    """Destination ports as the *data* defines them — Supabase first, then
+    ports.csv (fleet_data.load_table owns that fallback).
+
+    The chart and the port picker read this rather than the dict above, so
+    adding a port to the database is enough to make it appear everywhere.
+    """
+    try:
+        from fleet_data import load_table   # local import: avoids an import cycle
+        names = [str(name) for name in load_table("ports")["port_name"].tolist()]
+        if names:
+            return names
+    except Exception:
+        pass
+    return list(PORT_CYCLONE_EXPOSURE)
+
+
+def uncalibrated_ports() -> list:
+    """Ports in the data with no calibrated exposure value.
+
+    These silently fall back to DEFAULT_PORT_EXPOSURE, which is a made-up
+    number — the dashboard surfaces this list so a placeholder never gets
+    presented as a risk score.
+    """
+    return [name for name in known_ports() if name not in PORT_CYCLONE_EXPOSURE]
 
 # During the SW monsoon (Jun-Sep), cyclogenesis itself is suppressed (see
 # the monthly weights above) but rough seas / heavy rain still add a small
@@ -181,7 +214,7 @@ def monthly_climatology_table() -> pd.DataFrame:
     """Long-format table of (port, month, risk) for charting on the
     dashboard — one representative mid-month day per (port, month)."""
     rows = []
-    for port_name in PORT_CYCLONE_EXPOSURE:
+    for port_name in known_ports():
         for month in range(1, 13):
             sample_day = date(2026, month, 15)
             rows.append({
